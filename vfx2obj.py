@@ -693,6 +693,13 @@ def _gltf_pack_scene(meshes: List[MeshOut], materials: List[MaterialOut], out_di
         t = getattr(mesh, "translation", None)
         r = getattr(mesh, "rotation", None)
         s = getattr(mesh, "scale_vec", None)
+        if trs_scale is None:
+            trs_scale = scale
+
+        # Auto TRS scaling: if user scaled vertices but didn't set --trs-scale, follow --scale
+        if (trs_scale is None) or ((trs_scale == 1.0) and (scale != 1.0)):
+            trs_scale = scale
+
         if t is not None: node["translation"] = [float(t[0]) * trs_scale, float(t[1]) * trs_scale, float(t[2]) * trs_scale]
         if r is not None: node["rotation"] = list(r)
         if s is not None: node["scale"] = list(s)
