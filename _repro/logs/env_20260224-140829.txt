@@ -1,0 +1,14 @@
+Timestamp: 20260224-140829
+Root: C:\Users\Romek\OneDrive\Desktop\vfx2obj_build
+
+PowerShell: 7.5.4
+OS: Microsoft Windows NT 10.0.26200.0
+User: Romek
+Computer: ROMEK
+
+PATH (first 5):
+C:\Program Files\PowerShell\7
+C:\Program Files\Oculus\Support\oculus-runtime
+C:\windows\system32
+C:\windows
+C:\windows\System32\Wbem

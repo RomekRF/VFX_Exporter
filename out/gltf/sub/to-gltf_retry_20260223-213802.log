@@ -1,0 +1,3 @@
+usage: vfxcli [-h] {summary,to-gltf,to-vfx,verify-roundtrip} ...
+vfxcli: error: the following arguments are required: cmd
+

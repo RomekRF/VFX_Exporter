@@ -1,0 +1,64 @@
+21:59:16 | INFO: Data are loaded, start creating Blender stuff
+21:59:16 | INFO: Blender create Mesh node Mesh03
+Blender 4.4.0 (hash 05377985c527 built 2025-03-18 03:22:03)
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\Cutscene08_fx\shuttle_parts04.tga': No such file or directory
+21:59:16 | ERROR: Missing image file (index 0): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\Cutscene08_fx\shuttle_parts04.tga
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\Cutscene08_fx\shuttle_parts01.tga': No such file or directory
+21:59:16 | ERROR: Missing image file (index 1): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\Cutscene08_fx\shuttle_parts01.tga
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\Cutscene08_fx\shuttle_parts03.tga': No such file or directory
+21:59:16 | ERROR: Missing image file (index 2): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\Cutscene08_fx\shuttle_parts03.tga
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\Cutscene08_fx\shuttle_parts02.tga': No such file or directory
+21:59:16 | ERROR: Missing image file (index 3): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\Cutscene08_fx\shuttle_parts02.tga
+21:59:16 | INFO: Blender create Mesh node Plane03
+21:59:16 | INFO: Blender create Mesh node Plane05
+21:59:16 | INFO: Blender create Mesh node Plane07
+21:59:16 | INFO: Blender create Mesh node Plane09
+21:59:16 | INFO: Blender create Mesh node Plane12
+21:59:16 | INFO: Blender create Mesh node Plane13
+21:59:16 | INFO: Blender create Mesh node Plane14
+21:59:16 | INFO: Blender create Mesh node Plane15
+21:59:16 | INFO: Blender create Mesh node Plane16
+21:59:16 | INFO: Blender create Mesh node Plane17
+21:59:16 | INFO: Blender create Mesh node Object01
+21:59:16 | INFO: Blender create Mesh node Plane18
+21:59:16 | INFO: Blender create Mesh node Plane19
+21:59:16 | INFO: Blender create Mesh node Plane20
+21:59:16 | INFO: glTF import finished in 0.01s
+INFO Draco mesh compression is available, use library at C:\Program Files\Blender Foundation\Blender 4.4\4.4\scripts\addons_core\io_scene_gltf2\extern_draco.dll
+21:59:16 | INFO: Starting glTF 2.0 export
+21:59:16 | INFO: Extracting primitive: Mesh03
+21:59:16 | INFO: Primitives created: 4
+21:59:16 | INFO: Extracting primitive: Plane03
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane05
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane07
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane09
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane12
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane13
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane14
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane15
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane16
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane17
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Object01
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane18
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane19
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Extracting primitive: Plane20
+21:59:16 | INFO: Primitives created: 1
+21:59:16 | INFO: Finished glTF 2.0 export in 0.025016307830810547 s
+
+Wrote: C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\Cutscene08_fx\Cutscene08_fx.glb
+
+Blender quit
+

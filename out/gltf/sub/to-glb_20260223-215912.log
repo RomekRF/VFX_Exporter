@@ -1,0 +1,76 @@
+21:59:27 | INFO: Data are loaded, start creating Blender stuff
+21:59:27 | INFO: Blender create Mesh node Cylinder05
+Blender 4.4.0 (hash 05377985c527 built 2025-03-18 03:22:03)
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\sub\Sub_Cockpit_P02.tga': No such file or directory
+21:59:27 | ERROR: Missing image file (index 1): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\sub\Sub_Cockpit_P02.tga
+21:59:27 | INFO: Blender create Mesh node Cylinder11
+21:59:27 | INFO: Blender create Mesh node Loft04
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\sub\Sub_Cockpit_P01.tga': No such file or directory
+21:59:27 | ERROR: Missing image file (index 0): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\sub\Sub_Cockpit_P01.tga
+21:59:27 | INFO: Blender create Mesh node Cylinder12
+21:59:27 | INFO: Blender create Mesh node Cylinder13
+21:59:27 | INFO: Blender create Mesh node Loft05
+21:59:27 | INFO: Blender create Mesh node Box10
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\sub\Sub_Cockpit_P05.tga': No such file or directory
+21:59:27 | ERROR: Missing image file (index 4): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\sub\Sub_Cockpit_P05.tga
+21:59:27 | INFO: Blender create Mesh node A_D_01
+21:59:27 | INFO: Blender create Mesh node A_D_02
+21:59:27 | INFO: Blender create Mesh node A_D_03
+21:59:27 | INFO: Blender create Mesh node P_D_01
+21:59:27 | INFO: Blender create Mesh node P_D_02
+21:59:27 | INFO: Blender create Mesh node P_D_03
+21:59:27 | INFO: Blender create Mesh node Mesh15
+21:59:27 | INFO: Blender create Mesh node Box14
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\sub\Sub_Cockpit_P03.tga': No such file or directory
+21:59:27 | ERROR: Missing image file (index 2): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\sub\Sub_Cockpit_P03.tga
+21:59:27 | INFO: Blender create Mesh node Box01
+21:59:27 | INFO: Blender create Mesh node Box15
+21:59:27 | INFO: Blender create Mesh node Box16
+21:59:27 | INFO: Blender create Mesh node Sphere01
+21:59:27 | INFO: glTF import finished in 0.02s
+INFO Draco mesh compression is available, use library at C:\Program Files\Blender Foundation\Blender 4.4\4.4\scripts\addons_core\io_scene_gltf2\extern_draco.dll
+21:59:27 | INFO: Starting glTF 2.0 export
+21:59:27 | INFO: Extracting primitive: Cylinder05
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Cylinder11
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Loft04
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Cylinder12
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Cylinder13
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Loft05
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Box10
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: A_D_01
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: A_D_02
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: A_D_03
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: P_D_01
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: P_D_02
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: P_D_03
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Mesh15
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Box14
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Box01
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Box15
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Box16
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Extracting primitive: Sphere01
+21:59:27 | INFO: Primitives created: 1
+21:59:27 | INFO: Finished glTF 2.0 export in 0.029866456985473633 s
+
+Wrote: C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\sub\sub.glb
+
+Blender quit
+

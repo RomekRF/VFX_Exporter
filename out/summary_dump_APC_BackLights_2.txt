@@ -1,0 +1,20 @@
+File: C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\vfxstudio\samples\APC_BackLights_2.vfx
+Size: 928 bytes
+Version: 0x00040006
+End frame: 50
+Dummies: 0   Particles: 0
+         Meshes (from --debug-frames backend)         
++----------------------------------------------------+
+| Name           | Morph | FPS | Frames |      Flags |
+|----------------+-------+-----+--------+------------|
+| VFX_BackLights | False |  15 |     51 | 0x00000010 |
++----------------------------------------------------+
+   Textures /   
+Materials (scan)
++--------------+
+| Texture name |
+|--------------|
+| APC_Low.tga  |
+| APC_P01.tga  |
++--------------+
+

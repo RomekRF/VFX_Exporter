@@ -1,0 +1,9 @@
+Help probe run: 20260223-213544
+Base help: C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\vfxcli_help_20260223-213424.txt
+Keywords: (export|obj|mesh|meshes|frame|frames|debug|vfx2obj|convert|dump|extract|backend)
+------------------------------------------------------------
+
+=== to-gltf ===
+usage: vfxcli to-gltf [-h] [--exe EXE] [--out OUT] [--debug-frames] vfx
+  --debug-frames
+

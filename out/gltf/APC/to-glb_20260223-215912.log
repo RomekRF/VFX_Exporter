@@ -1,0 +1,297 @@
+21:59:14 | INFO: Data are loaded, start creating Blender stuff
+21:59:14 | INFO: Blender create Mesh node Mesh01
+Blender 4.4.0 (hash 05377985c527 built 2025-03-18 03:22:03)
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P14.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 13): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P14.tga
+21:59:14 | INFO: Blender create Mesh node Box02
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P02.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 1): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P02.tga
+21:59:14 | INFO: Blender create Mesh node Cylinder01
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P10.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 9): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P10.tga
+21:59:14 | INFO: Blender create Mesh node Line01
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P04.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 3): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P04.tga
+21:59:14 | INFO: Blender create Mesh node Box03
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P01.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 0): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P01.tga
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P03.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 2): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P03.tga
+21:59:14 | INFO: Blender create Mesh node Mesh03
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P08.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 7): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P08.tga
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P09.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 8): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P09.tga
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P11.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 10): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P11.tga
+21:59:14 | INFO: Blender create Mesh node Box07
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P05.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 4): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P05.tga
+21:59:14 | INFO: Blender create Mesh node Line03
+21:59:14 | INFO: Blender create Mesh node Cylinder02
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P06.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 5): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P06.tga
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P07.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 6): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P07.tga
+21:59:14 | INFO: Blender create Mesh node Box08
+21:59:14 | INFO: Blender create Mesh node Box09
+21:59:14 | INFO: Blender create Mesh node Line04
+21:59:14 | INFO: Blender create Mesh node Box10
+21:59:14 | INFO: Blender create Mesh node Box11
+21:59:14 | INFO: Blender create Mesh node Box12
+21:59:14 | INFO: Blender create Mesh node Cylinder03
+21:59:14 | INFO: Blender create Mesh node Box01
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P12.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 11): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P12.tga
+21:59:14 | INFO: Blender create Mesh node Box13
+21:59:14 | INFO: Blender create Mesh node Box14
+Error: Cannot read 'C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P13.tga': No such file or directory
+21:59:14 | ERROR: Missing image file (index 12): C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC_Cocpit_P13.tga
+21:59:14 | INFO: Blender create Mesh node Box15
+21:59:14 | INFO: Blender create Mesh node Box16
+21:59:14 | INFO: Blender create Mesh node Box17
+21:59:14 | INFO: Blender create Mesh node Box18
+21:59:14 | INFO: Blender create Mesh node Box19
+21:59:14 | INFO: Blender create Mesh node Box20
+21:59:14 | INFO: Blender create Mesh node Box21
+21:59:14 | INFO: Blender create Mesh node Box22
+21:59:14 | INFO: Blender create Mesh node Box23
+21:59:14 | INFO: Blender create Mesh node Box24
+21:59:14 | INFO: Blender create Mesh node Box25
+21:59:14 | INFO: Blender create Mesh node Box26
+21:59:14 | INFO: Blender create Mesh node Box27
+21:59:14 | INFO: Blender create Mesh node Box28
+21:59:14 | INFO: Blender create Mesh node Box29
+21:59:14 | INFO: Blender create Mesh node Box30
+21:59:14 | INFO: Blender create Mesh node Box31
+21:59:14 | INFO: Blender create Mesh node Box32
+21:59:14 | INFO: Blender create Mesh node Box33
+21:59:14 | INFO: Blender create Mesh node Box34
+21:59:14 | INFO: Blender create Mesh node Box35
+21:59:14 | INFO: Blender create Mesh node Box04
+21:59:14 | INFO: Blender create Mesh node Box36
+21:59:14 | INFO: Blender create Mesh node Box37
+21:59:14 | INFO: Blender create Mesh node Box38
+21:59:14 | INFO: Blender create Mesh node Box39
+21:59:14 | INFO: Blender create Mesh node Box40
+21:59:14 | INFO: Blender create Mesh node Box41
+21:59:14 | INFO: Blender create Mesh node Box42
+21:59:14 | INFO: Blender create Mesh node Box43
+21:59:14 | INFO: Blender create Mesh node Box44
+21:59:14 | INFO: Blender create Mesh node Box45
+21:59:14 | INFO: Blender create Mesh node Box46
+21:59:14 | INFO: Blender create Mesh node Box47
+21:59:14 | INFO: Blender create Mesh node Box05
+21:59:14 | INFO: Blender create Mesh node Box48
+21:59:14 | INFO: Blender create Mesh node Mesh04
+21:59:14 | INFO: Blender create Mesh node Cylinder04
+21:59:14 | INFO: Blender create Mesh node Box06
+21:59:14 | INFO: Blender create Mesh node Box49
+21:59:14 | INFO: Blender create Mesh node Box50
+21:59:14 | INFO: Blender create Mesh node Box51
+21:59:14 | INFO: Blender create Mesh node Box52
+21:59:14 | INFO: Blender create Mesh node Box53
+21:59:14 | INFO: Blender create Mesh node Box54
+21:59:14 | INFO: Blender create Mesh node Box55
+21:59:14 | INFO: Blender create Mesh node Box56
+21:59:14 | INFO: Blender create Mesh node Box57
+21:59:14 | INFO: Blender create Mesh node Box58
+21:59:14 | INFO: Blender create Mesh node Mesh02
+21:59:14 | INFO: Blender create Mesh node Box59
+21:59:14 | INFO: Blender create Mesh node Box60
+21:59:14 | INFO: Blender create Mesh node A_D_01
+21:59:14 | INFO: Blender create Mesh node A_D_02
+21:59:14 | INFO: Blender create Mesh node A_D_03
+21:59:14 | INFO: Blender create Mesh node S_D_02
+21:59:14 | INFO: Blender create Mesh node S_D_03
+21:59:14 | INFO: Blender create Mesh node S_D_04
+21:59:14 | INFO: Blender create Mesh node P_D_01
+21:59:14 | INFO: Blender create Mesh node P_D_02
+21:59:14 | INFO: Blender create Mesh node P_D_03
+21:59:14 | INFO: Blender create Mesh node Box61
+21:59:14 | INFO: Blender create Mesh node Box62
+21:59:14 | INFO: Blender create Mesh node S_D_05
+21:59:14 | INFO: Blender create Mesh node Box63
+21:59:14 | INFO: Blender create Mesh node Box64
+21:59:14 | INFO: Blender create Mesh node Mesh05
+21:59:14 | INFO: glTF import finished in 0.06s
+INFO Draco mesh compression is available, use library at C:\Program Files\Blender Foundation\Blender 4.4\4.4\scripts\addons_core\io_scene_gltf2\extern_draco.dll
+21:59:15 | INFO: Starting glTF 2.0 export
+21:59:15 | INFO: Extracting primitive: Mesh01
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box02
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Cylinder01
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Line01
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box03
+21:59:15 | INFO: Primitives created: 3
+21:59:15 | INFO: Extracting primitive: Mesh03
+21:59:15 | INFO: Primitives created: 4
+21:59:15 | INFO: Extracting primitive: Box07
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Line03
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Cylinder02
+21:59:15 | INFO: Primitives created: 2
+21:59:15 | INFO: Extracting primitive: Box08
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box09
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Line04
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box10
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box11
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box12
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Cylinder03
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box01
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box13
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box14
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box15
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box16
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box17
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box18
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box19
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box20
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box21
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box22
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box23
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box24
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box25
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box26
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box27
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box28
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box29
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box30
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box31
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box32
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box33
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box34
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box35
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box04
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box36
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box37
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box38
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box39
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box40
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box41
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box42
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box43
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box44
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box45
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box46
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box47
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box05
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box48
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Mesh04
+21:59:15 | INFO: Primitives created: 2
+21:59:15 | INFO: Extracting primitive: Cylinder04
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box06
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box49
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box50
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box51
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box52
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box53
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box54
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box55
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box56
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box57
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box58
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Mesh02
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box59
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box60
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: A_D_01
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: A_D_02
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: A_D_03
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: S_D_02
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: S_D_03
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: S_D_04
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: P_D_01
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: P_D_02
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: P_D_03
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box61
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box62
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: S_D_05
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box63
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Box64
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Extracting primitive: Mesh05
+21:59:15 | INFO: Primitives created: 1
+21:59:15 | INFO: Finished glTF 2.0 export in 0.12999844551086426 s
+
+Wrote: C:\Users\Romek\OneDrive\Desktop\vfx2obj_build\out\gltf\APC\APC.glb
+
+Blender quit
+

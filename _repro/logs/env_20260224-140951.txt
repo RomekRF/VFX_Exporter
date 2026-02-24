@@ -1,0 +1,24 @@
+Timestamp: 20260224-140951
+Root: C:\Users\Romek\OneDrive\Desktop\vfx2obj_build
+
+PowerShell: 7.5.4
+OS: Microsoft Windows NT 10.0.26200.0
+User: Romek
+Computer: ROMEK
+
+PATH (first 5):
+C:\Program Files\PowerShell\7
+C:\Program Files\Oculus\Support\oculus-runtime
+C:\windows\system32
+C:\windows
+C:\windows\System32\Wbem
+
+=== tool versions ===
+git:   git version 2.52.0.windows.1
+cmake: cmake version 4.2.2
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+ninja: 1.13.2
+cl:    [missing] cl
+python:Python 3.13.7
+node:  v22.11.0
