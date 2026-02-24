@@ -1,0 +1,29 @@
+# --- VFX_Exporter ignore (managed) ---
+# Build / packaging outputs
+build/
+dist/
+out/
+*.spec
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local backups / scratch
+backups/
+*.bak
+*.bak-*
+
+# Repro outputs (keep logs + README, ignore heavy outputs)
+_repro/out/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# OS
+Thumbs.db
+Desktop.ini
+

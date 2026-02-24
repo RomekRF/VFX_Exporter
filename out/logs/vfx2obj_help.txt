@@ -1,2 +1,0 @@
-[WARN] Ignoring unknown option: --help
-No .vfx files provided.

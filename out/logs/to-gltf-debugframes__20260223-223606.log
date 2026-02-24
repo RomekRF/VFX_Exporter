@@ -1,2 +1,0 @@
-usage: vfxcli to-gltf [-h] [--exe EXE] [--out OUT] [--debug-frames] vfx
-vfxcli to-gltf: error: the following arguments are required: vfx
