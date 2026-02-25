@@ -1,4 +1,3 @@
-from __future__ import annotations
 #!/usr/bin/env python3
 # vfx2obj.py - Drag/drop VFX -> OBJ for Blender
 # Supports Red Faction VFX version 0x00040006 ("VFX V 4.6")
@@ -6,7 +5,7 @@ from __future__ import annotations
 import os
 import struct
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 DEBUG_FRAMES = False  # set by --debug-frames
 
@@ -532,7 +531,8 @@ def parse_mesh_section(b: Bin, version: int, section_end: int) -> Optional[MeshO
     )
 
 
-def _gltf_pack_scene(meshes: List[MeshOut], materials: List[MaterialOut], out_dir: str, base_name: str, scale: float = 10000.0, trs_scale: float = 1.0) -> Tuple[str, str]:
+def _gltf_pack_scene(meshes: List[MeshOut], materials: List[MaterialOut], out_dir: str, base_name: str, scale: float = 10000.0, trs_scale: float = 1.0, center_root: bool = False, center_geom: bool = False, bake_origin: bool = False) -> Tuple[str, str]:
+    scene_nodes = [] 
     """
     Build a single .gltf + .bin containing all meshes as separate nodes.
     - Keeps meshes editable as separate objects in Blender.
@@ -613,9 +613,9 @@ def _gltf_pack_scene(meshes: List[MeshOut], materials: List[MaterialOut], out_di
         minx = miny = minz = float("inf")
         maxx = maxy = maxz = float("-inf")
         for v in mesh.verts:
-            x = ((v.x if hasattr(v,'x') else v[0]) + tx) * scale
-            y = ((v.y if hasattr(v,'y') else v[1]) + ty) * scale
-            z = ((v.z if hasattr(v,'z') else v[2]) + tz) * scale
+            x = ((v.x if hasattr(v,'x') else v[0])) * scale
+            y = ((v.y if hasattr(v,'y') else v[1])) * scale
+            z = ((v.z if hasattr(v,'z') else v[2])) * scale
             pos.extend([x, y, z])
             minx = min(minx, x); miny = min(miny, y); minz = min(minz, z)
             maxx = max(maxx, x); maxy = max(maxy, y); maxz = max(maxz, z)
@@ -704,9 +704,227 @@ def _gltf_pack_scene(meshes: List[MeshOut], materials: List[MaterialOut], out_di
         if r is not None: node["rotation"] = list(r)
         if s is not None: node["scale"] = list(s)
         gltf["nodes"].append(node)
-        gltf["scenes"][0]["nodes"].append(node_i)
+        scene_nodes.append(node_i)
+    # Rootify: one clean scene root for Blender
+    root_idx = len(gltf['nodes'])
+    root_node = {'name': '__VFX_ROOT__', 'children': scene_nodes, 'rotation': [0.7071067811865476, 0.0, 0.0, 0.7071067811865476]}
 
+    def _qmul(a,b):
+        ax,ay,az,aw=a; bx,by,bz,bw=b
+        return (
+            aw*bx + ax*bw + ay*bz - az*by,
+            aw*by - ax*bz + ay*bw + az*bx,
+            aw*bz + ax*by - ay*bx + az*bw,
+            aw*bw - ax*bx - ay*by - az*bz
+        )
+    def _qconj(q):
+        x,y,z,w=q; return (-x,-y,-z,w)
+    def _qrot(q, v3):  # q is glTF [x,y,z,w]
+        vx,vy,vz = v3
+        p = (vx,vy,vz,0.0)
+        return _qmul(_qmul(q,p), _qconj(q))[:3]
+
+    if center_root:
+        sx = sy = sz = 0.0
+        nmesh = 0
+        for n in gltf['nodes']:
+            if isinstance(n, dict) and ('mesh' in n):
+                t = n.get('translation')
+                if isinstance(t, list) and len(t) == 3:
+                    sx += float(t[0]); sy += float(t[1]); sz += float(t[2])
+                    nmesh += 1
+        if nmesh > 0:
+                        # center_root: translate root by -(R * avg(mesh_translation)) so world lands near origin
+            avg = (sx / nmesh, sy / nmesh, sz / nmesh)
+            q = root_node.get('rotation', [0.0,0.0,0.0,1.0])  # glTF [x,y,z,w]
+            vx,vy,vz = _qrot(tuple(q), avg)
+            root_node['translation'] = [-vx, -vy, -vz]
+
+    gltf['nodes'].append(root_node)
+    gltf['scenes'][0]['nodes'] = [root_idx]
     # Buffer reference (external .bin)
+    if center_geom:
+        # Recenter POSITION accessor 0 (float32 VEC3) by editing bin_blob in-place
+        import struct
+        try:
+            acc0 = gltf['accessors'][0]
+            bv0  = gltf['bufferViews'][acc0['bufferView']]
+            base0 = int(bv0.get('byteOffset', 0)) + int(acc0.get('byteOffset', 0))
+            cnt0  = int(acc0['count'])
+            minx=miny=minz=1e30; maxx=maxy=maxz=-1e30
+            for ii in range(cnt0):
+                o = base0 + ii*12
+                x,y,z = struct.unpack_from('<fff', bin_blob, o)
+                if x<minx: minx=x
+                if y<miny: miny=y
+                if z<minz: minz=z
+                if x>maxx: maxx=x
+                if y>maxy: maxy=y
+                if z>maxz: maxz=z
+            cx=(minx+maxx)*0.5; cy=(miny+maxy)*0.5; cz=(minz+maxz)*0.5
+            for ii in range(cnt0):
+                o = base0 + ii*12
+                x,y,z = struct.unpack_from('<fff', bin_blob, o)
+                struct.pack_into('<fff', bin_blob, o, x-cx, y-cy, z-cz)
+            if 'min' in acc0 and 'max' in acc0 and acc0.get('type') == 'VEC3':
+                acc0['min'] = [float(acc0['min'][0]) - cx, float(acc0['min'][1]) - cy, float(acc0['min'][2]) - cz]
+                acc0['max'] = [float(acc0['max'][0]) - cx, float(acc0['max'][1]) - cy, float(acc0['max'][2]) - cz]
+        except Exception as e:
+            print('[WARN] center-geom failed:', e)
+
+    if bake_origin:
+
+        # Bake root rotation into geometry AND recenter geometry so Blender shows mesh at 0,0,0.
+
+        import struct
+
+        def _qmul(a,b):
+
+            ax,ay,az,aw=a; bx,by,bz,bw=b
+
+            return (aw*bx + ax*bw + ay*bz - az*by, aw*by - ax*bz + ay*bw + az*bx, aw*bz + ax*by - ay*bx + az*bw, aw*bw - ax*bx - ay*by - az*bz)
+
+        def _qconj(q):
+
+            x,y,z,w=q; return (-x,-y,-z,w)
+
+        def _qrot(q, v3):
+
+            vx,vy,vz=v3
+
+            p=(vx,vy,vz,0.0)
+
+            x,y,z,_ = _qmul(_qmul(q,p), _qconj(q))
+
+            return (x,y,z)
+
+        try:
+
+            rix = int(gltf['scenes'][0]['nodes'][0])
+
+            rnode = gltf['nodes'][rix]
+
+            rq = rnode.get('rotation', [0.0,0.0,0.0,1.0])  # glTF [x,y,z,w]
+
+            if not isinstance(bin_blob, (bytearray,)):
+
+                bin_blob = bytearray(bin_blob)
+
+            accessors = gltf.get('accessors', [])
+
+            bvs = gltf.get('bufferViews', [])
+
+            visited = set()
+
+            def _process_accessor_pos(acc_i):
+
+                if acc_i in visited: return
+
+                visited.add(acc_i)
+
+                acc = accessors[acc_i]
+
+                if acc.get('type') != 'VEC3' or acc.get('componentType') != 5126:
+
+                    return
+
+                bv = bvs[acc['bufferView']]
+
+                base = int(bv.get('byteOffset', 0)) + int(acc.get('byteOffset', 0))
+
+                stride = int(bv.get('byteStride', 12) or 12)
+
+                cnt = int(acc['count'])
+
+                # 1) rotate all verts by root rotation; gather bounds
+
+                minx=miny=minz=1e30; maxx=maxy=maxz=-1e30
+
+                for ii in range(cnt):
+
+                    o = base + ii*stride
+
+                    x,y,z = struct.unpack_from('<fff', bin_blob, o)
+
+                    rx,ry,rz = _qrot(tuple(rq), (float(x),float(y),float(z)))
+
+                    struct.pack_into('<fff', bin_blob, o, float(rx),float(ry),float(rz))
+
+                    if rx<minx: minx=rx
+
+                    if ry<miny: miny=ry
+
+                    if rz<minz: minz=rz
+
+                    if rx>maxx: maxx=rx
+
+                    if ry>maxy: maxy=ry
+
+                    if rz>maxz: maxz=rz
+
+                cx=(minx+maxx)*0.5; cy=(miny+maxy)*0.5; cz=(minz+maxz)*0.5
+
+                # 2) recenter by subtracting bounds center; recompute bounds
+
+                minx=miny=minz=1e30; maxx=maxy=maxz=-1e30
+
+                for ii in range(cnt):
+
+                    o = base + ii*stride
+
+                    x,y,z = struct.unpack_from('<fff', bin_blob, o)
+
+                    x=float(x)-cx; y=float(y)-cy; z=float(z)-cz
+
+                    struct.pack_into('<fff', bin_blob, o, x,y,z)
+
+                    if x<minx: minx=x
+
+                    if y<miny: miny=y
+
+                    if z<minz: minz=z
+
+                    if x>maxx: maxx=x
+
+                    if y>maxy: maxy=y
+
+                    if z>maxz: maxz=z
+
+                acc['min'] = [float(minx), float(miny), float(minz)]
+
+                acc['max'] = [float(maxx), float(maxy), float(maxz)]
+
+            # apply to every POSITION accessor referenced by any mesh primitive
+
+            for n in gltf.get('nodes', []):
+
+                if not isinstance(n, dict) or ('mesh' not in n):
+
+                    continue
+
+                mesh = gltf['meshes'][n['mesh']]
+
+                for prim in mesh.get('primitives', []):
+
+                    attrs = prim.get('attributes', {})
+
+                    if 'POSITION' in attrs:
+
+                        _process_accessor_pos(int(attrs['POSITION']))
+
+                n['translation'] = [0.0,0.0,0.0]
+
+            rnode['translation'] = [0.0,0.0,0.0]
+
+            rnode['rotation'] = [0.0,0.0,0.0,1.0]
+
+            print('[INFO] Baking origin: baked root rotation + recentered geometry; node TRS zeroed')
+
+        except Exception as e:
+
+            print('[WARN] bake-origin failed:', e)
+
+
     out_bin = os.path.join(out_dir, base_name + ".bin")
     out_gltf = os.path.join(out_dir, base_name + ".gltf")
     with open(out_bin, "wb") as f:
@@ -719,10 +937,10 @@ def _gltf_pack_scene(meshes: List[MeshOut], materials: List[MaterialOut], out_di
     return out_gltf, out_bin
 
 
-def write_gltf_scene(path_gltf: str, meshes: List[MeshOut], materials: List[MaterialOut], scale: float = 10000.0, trs_scale: float = 1.0) -> None:
+def write_gltf_scene(path_gltf: str, meshes: List[MeshOut], materials: List[MaterialOut], scale: float = 10000.0, trs_scale: float = 1.0, center_root: bool = False, center_geom: bool = False, bake_origin: bool = False) -> None:
     out_dir = os.path.dirname(path_gltf) or "."
     base_name = os.path.splitext(os.path.basename(path_gltf))[0]
-    out_gltf, out_bin = _gltf_pack_scene(meshes, materials, out_dir, base_name, scale=scale, trs_scale=trs_scale)
+    out_gltf, out_bin = _gltf_pack_scene(meshes, materials, out_dir, base_name, scale=scale, trs_scale=trs_scale, center_root=center_root, center_geom=center_geom, bake_origin=bake_origin)
     print(f"Wrote: {out_gltf}")
     print(f"Wrote: {out_bin}")
 
@@ -769,7 +987,7 @@ def write_obj(path_obj: str, mesh: MeshOut, scale: float = 10000.0, materials: O
             (t0, t1, t2) = face.uvi
             f.write(f"f {v0}/{t0} {v1}/{t1} {v2}/{t2}\n")
 
-def convert_file(path_vfx: str, scale: float = 10000.0, trs_scale: float = 1.0) -> None:
+def convert_file(path_vfx: str, scale: float = 10000.0, trs_scale: float = 1.0, center_root: bool = False, center_geom: bool = False, bake_origin: bool = False) -> None:
     with open(path_vfx, "rb") as f:
         data = f.read()
 
@@ -823,8 +1041,7 @@ def convert_file(path_vfx: str, scale: float = 10000.0, trs_scale: float = 1.0) 
     base = os.path.splitext(path_vfx)[0]
     # If requested, export a *single* glTF scene containing all meshes
     if EXPORT_GLTF:
-        write_gltf_scene(base + '.gltf', meshes, materials, scale=scale, trs_scale=trs_scale)
-
+        write_gltf_scene(base + '.gltf', meshes, materials, scale=scale, trs_scale=trs_scale, center_root=center_root, center_geom=center_geom, bake_origin=bake_origin)
     for m in meshes:
         safe = "".join(c if c.isalnum() or c in "._- " else "_" for c in m.name).strip()
         if not safe:
@@ -843,6 +1060,12 @@ def main(argv: List[str]) -> int:
     global EXPORT_OBJ, EXPORT_GLTF, CAPTURE_FRAMES
     scale = 10000.0
     trs_scale = 1.0
+
+    center_geom = False  # --center-geom
+    center_root = False
+    bake_origin = False  # --bake-origin: bake root+mesh transforms into vertices so Blender shows 0,0,0
+
+    center_geom = False  # --center-geom: recenter POSITION vertices around origin 
     args = list(argv[1:])
 
     EXPORT_OBJ = True
@@ -876,6 +1099,10 @@ def main(argv: List[str]) -> int:
             CAPTURE_FRAMES = False
             del args[i:i+1]
             continue
+        if a in ('--center','--center-root'):
+            center_root = True
+            del args[i:i+1]
+            continue
         if a in ('--debug-frames',):
             global DEBUG_FRAMES
             DEBUG_FRAMES = True
@@ -902,6 +1129,20 @@ def main(argv: List[str]) -> int:
             del args[i:i+1]
             continue
         # Unknown flag: drop it so it doesn't get treated as a filename
+        if a in ('--center-geom',):
+            center_geom = True
+            del args[i:i+1]
+            continue
+
+        if a in ('--bake-origin',):
+
+            bake_origin = True
+
+            del args[i:i+1]
+
+            continue
+
+
         print(f'[WARN] Ignoring unknown option: {a}')
         del args[i:i+1]
         continue
@@ -913,7 +1154,7 @@ def main(argv: List[str]) -> int:
     for p in args:
         if os.path.isfile(p):
             try:
-                convert_file(p, scale=scale, trs_scale=trs_scale)
+                convert_file(p, scale=scale, trs_scale=trs_scale, center_root=center_root, center_geom=center_geom, bake_origin=bake_origin)
             except Exception as e:
                 print(f"[ERROR] {p}: {e}")
         else:
@@ -930,6 +1171,8 @@ if __name__ == "__main__":
 EXPORT_OBJ = True
 EXPORT_GLTF = False
 CAPTURE_FRAMES = False
+
+
 
 
 
