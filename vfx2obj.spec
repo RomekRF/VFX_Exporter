@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['vfx2obj.py'],
+    ['C:\\Users\\Romek\\OneDrive\\Desktop\\vfx2obj_build\\vfx2obj.py'],
     pathex=[],
     binaries=[],
     datas=[],

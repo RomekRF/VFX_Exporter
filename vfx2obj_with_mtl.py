@@ -13,6 +13,15 @@ S16_MAX = 32767.0
 # ---- binary helpers ----
 
 class Bin:
+    def remaining(self) -> int:
+        return len(self.data) - self.ofs
+
+    def align4(self) -> None:
+        # Advance to next 4-byte boundary
+        pad = (-self.ofs) % 4
+        if pad:
+            self.read(pad)
+
     def __init__(self, data: bytes):
         self.data = data
         self.ofs = 0

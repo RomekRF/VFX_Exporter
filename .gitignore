@@ -27,3 +27,15 @@ _repro/out/
 Thumbs.db
 Desktop.ini
 
+
+
+# --- vfx2obj_build generated outputs ---
+.venv/
+out_gltf/
+*.gltf
+*.glb
+*.bin
+*.obj
+*.mtl
+*.log
+*.tmp
