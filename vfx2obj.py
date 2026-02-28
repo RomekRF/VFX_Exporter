@@ -1799,7 +1799,6 @@ def export_new_vfx_from_gltf(gltf_path: str,
                              out_vfx: str,
                              gltf_scale: float = 1.0,
                              anchor: Optional[str] = None,
-                             prop_flip_z: bool = False,
                              debug: bool = False) -> None:
     g = _gltf_load_json(gltf_path)
     bin_data = _gltf_load_bin(g, gltf_path)
@@ -1984,15 +1983,18 @@ def export_new_vfx_from_gltf(gltf_path: str,
         else:
             # Treat '$*' nodes as DMMY (markers/props)
             if name.startswith("$"):
-                # Optional: flip Z for $prop_* markers (helps match RF attachment orientation)
-                if prop_flip_z and name.startswith("$prop_"):
-                    t_b = (t_b[0], t_b[1], -t_b[2])
+                # DMMY nodes must use THEIR OWN local TRS. Do NOT reuse the last mesh's t_b/r_b.
+                t_b = (float(t[0]), float(t[1]), float(t[2]))
+                r_b = (float(r[0]), float(r[1]), float(r[2]), float(r[3]))
+                # Anchor shift applies only to ROOT nodes (parent == Scene Root)
+                if parent_name == "Scene Root" and anchor_shift != (0.0,0.0,0.0):
+                    t_b = (t_b[0] - anchor_shift[0], t_b[1] - anchor_shift[1], t_b[2] - anchor_shift[2])
                 dummy_objs.append({
                     "node_index": ni,
                     "name": name,
                     "parent_name": parent_name,
-                    "t": (float(t_b[0]), float(t_b[1]), float(t_b[2])),
-                    "r": (float(r_b[0]), float(r_b[1]), float(r_b[2]), float(r_b[3])),
+                    "t": t_b,
+                    "r": r_b,
                 })
 
     # --- infer durations (global end_frame is in 15fps units) ---
@@ -2268,7 +2270,7 @@ def export_new_vfx_from_gltf(gltf_path: str,
         body = bytearray()
         body += _pack_strz(do["name"])
         body += _pack_strz(do["parent_name"])
-        body += struct.pack("<B", 1)  # save_parent
+        body += struct.pack("<B", 0)  # save_parent (match RF samples)
         pos_rf = blender_to_rf(do["t"])
         q_rf = quat_blender_to_rf(do["r"])
         body += _pack_vec3_rf(pos_rf)
@@ -2413,7 +2415,7 @@ def main(argv: List[str]) -> int:
             print("  Roundtrip:   vfx2obj.py --roundtrip-only [--verify-roundtrip] [--roundtrip-out PATH] file.vfx")
             print("  Patch VFX (offset): vfx2obj.py --vfx-out PATH --patch-vfx-only --mesh-offset Name=x,y,z file.vfx")
             print("  Patch VFX from glTF: vfx2obj.py --vfx-out PATH --patch-vfx-only --gltf-in edited.gltf [--gltf-scale N] [--only-mesh a,b] template.vfx")
-            print("  True export: vfx2obj.py --new-vfx-from-gltf scene.gltf --vfx-out PATH [--gltf-scale N] [--anchor NODE] [--prop-flip-z]")
+            print("  True export: vfx2obj.py --new-vfx-from-gltf scene.gltf --vfx-out PATH [--gltf-scale N] [--anchor NODE]")
             print("  New VFX from glTF: vfx2obj.py --new-vfx-from-gltf scene.gltf --vfx-out PATH [--gltf-scale N]")
             return 0
 
