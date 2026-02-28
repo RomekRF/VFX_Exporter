@@ -20,6 +20,8 @@ import sys
 import json
 import math
 import struct
+import hashlib
+import base64
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -92,6 +94,15 @@ class Bin:
 def rf_to_blender(v: Tuple[float, float, float]) -> Tuple[float, float, float]:
     sx, sy, sz = v
     return (-sx, -sz, sy)
+
+
+def blender_to_rf(v: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    bx, by, bz = v
+    # inverse of rf_to_blender: (bx,by,bz)=(-sx,-sz,sy)
+    sx = -bx
+    sy = bz
+    sz = -by
+    return (sx, sy, sz)
 
 def read_vec3_rf(b: Bin) -> Tuple[float, float, float]:
     return (b.f32(), b.f32(), b.f32())
@@ -189,6 +200,14 @@ def quat_rf_to_blender(q: Tuple[float,float,float,float]) -> Tuple[float,float,f
     Rt = mat3_mul(mat3_mul(_M, R), mat3_T(_M))
     return mat3_to_quat(Rt)
 
+
+def quat_blender_to_rf(q: Tuple[float,float,float,float]) -> Tuple[float,float,float,float]:
+    # Inverse of quat_rf_to_blender.
+    # If qb = M * qrf * M^T (as rotation matrices), then qrf = M^T * qb * M.
+    Rb = quat_to_mat3(q)
+    Rt = mat3_mul(mat3_mul(mat3_T(_M), Rb), _M)
+    return mat3_to_quat(Rt)
+
 def quat_dot(a: Tuple[float,float,float,float], b: Tuple[float,float,float,float]) -> float:
     return a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3]
 
@@ -251,6 +270,12 @@ class MeshFrame:
     center_rf: Optional[Tuple[float,float,float]] = None
     mult_rf: Optional[Tuple[float,float,float]] = None
     pos_s16: Optional[List[Tuple[int,int,int]]] = None
+
+    # absolute offsets into the original VFX file (for patch-in-place writing)
+    center_ofs: Optional[int] = None
+    mult_ofs: Optional[int] = None
+    pos_ofs: Optional[int] = None  # start of packed int16 triplets (x,y,z) * num_vertices
+    pos_count: int = 0
 
     # UVs present for index==0 (or dump_uvs)
     uvs: Optional[List[Tuple[float,float]]] = None  # length 3*num_faces
@@ -472,8 +497,12 @@ def parse_mesh(b: Bin, hdr: VfxHeader, section_end: int) -> VfxMesh:
         fr = MeshFrame()
         # positions
         if morph or fi == 0:
+            fr.center_ofs = b.tell()
             fr.center_rf = read_vec3_rf(b)
+            fr.mult_ofs = b.tell()
             fr.mult_rf = read_vec3_rf(b)
+            fr.pos_ofs = b.tell()
+            fr.pos_count = num_vertices
             fr.pos_s16 = [(b.s16(), b.s16(), b.s16()) for _ in range(num_vertices)]
             if (facing or facing_rod) and ver >= 0x3000B:
                 _ = b.f32(); _ = b.f32()
@@ -914,6 +943,302 @@ def decompress_positions_bl(fr: MeshFrame, num_vertices: int) -> List[Tuple[floa
         out.append(rf_to_blender((vx, vy, vz)))
     return out
 
+
+# ----------------------------
+# VFX patching / roundtrip helpers
+# ----------------------------
+
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024*1024), b""):
+            h.update(chunk)
+    return h.hexdigest().upper()
+
+def roundtrip_copy(in_path: str, out_path: str, verify: bool) -> None:
+    data = open(in_path, "rb").read()
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    with open(out_path, "wb") as f:
+        f.write(data)
+    print("Wrote:", out_path)
+    if verify:
+        h1 = _sha256_file(in_path)
+        h2 = _sha256_file(out_path)
+        if h1 == h2:
+            print(f"[ROUNDTRIP_OK] byte-identical (SHA256={h2})")
+        else:
+            print(f"[ROUNDTRIP_FAIL] SHA256 mismatch: in={h1} out={h2}")
+            raise SystemExit(1)
+
+def _write_vec3_f32(buf: bytearray, ofs: int, v: Tuple[float,float,float]) -> None:
+    buf[ofs:ofs+12] = struct.pack("<fff", float(v[0]), float(v[1]), float(v[2]))
+
+def _write_pos_s16(buf: bytearray, ofs: int, pos_s16: List[Tuple[int,int,int]]) -> None:
+    # pack as <hhh repeated
+    out = bytearray()
+    out_extend = out.extend
+    for (x,y,z) in pos_s16:
+        out_extend(struct.pack("<hhh", int(x), int(y), int(z)))
+    buf[ofs:ofs+len(out)] = out
+
+def encode_positions_to_s16(positions_bl: List[Tuple[float,float,float]]) -> Tuple[Tuple[float,float,float], Tuple[float,float,float], List[Tuple[int,int,int]]]:
+    """Encode Blender-basis positions into RF stored-basis center/mult + signed-16 triplets.
+    Decodes as: stored_pos = center + mult * s16.
+    """
+    if not positions_bl:
+        return (0.0,0.0,0.0), (1.0,1.0,1.0), []
+    # convert to stored basis
+    ps = [blender_to_rf(p) for p in positions_bl]
+    xs = [p[0] for p in ps]; ys = [p[1] for p in ps]; zs = [p[2] for p in ps]
+    mins = (min(xs), min(ys), min(zs))
+    maxs = (max(xs), max(ys), max(zs))
+    mult = [0.0,0.0,0.0]
+    center = [0.0,0.0,0.0]
+    for ax in range(3):
+        mn = mins[ax]; mx = maxs[ax]
+        if abs(mx - mn) < 1e-20:
+            mult[ax] = 1.0
+            center[ax] = mn
+        else:
+            m = (mx - mn) / 65535.0
+            mult[ax] = m
+            center[ax] = mn + m * 32768.0
+    cx,cy,cz = center
+    mx,my,mz = mult
+    pos_s16: List[Tuple[int,int,int]] = []
+    def clamp16(v: int) -> int:
+        return -32768 if v < -32768 else (32767 if v > 32767 else v)
+    for (sx,sy,sz) in ps:
+        ix = 0 if mx == 0.0 else int(round((sx - cx) / mx))
+        iy = 0 if my == 0.0 else int(round((sy - cy) / my))
+        iz = 0 if mz == 0.0 else int(round((sz - cz) / mz))
+        pos_s16.append((clamp16(ix), clamp16(iy), clamp16(iz)))
+    return (float(cx),float(cy),float(cz)), (float(mx),float(my),float(mz)), pos_s16
+
+# ----------------------------
+# Minimal glTF reader (POSITION + morph POSITION deltas)
+# ----------------------------
+
+def _gltf_load_json(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def _gltf_load_bin(g: Dict[str, Any], gltf_path: str) -> bytes:
+    bufs = g.get("buffers") or []
+    if not bufs:
+        return b""
+    uri = bufs[0].get("uri") or ""
+    if uri.startswith("data:"):
+        # data:application/octet-stream;base64,...
+        b64 = uri.split(",", 1)[1]
+        return base64.b64decode(b64)
+    base = os.path.dirname(os.path.abspath(gltf_path))
+    bin_path = os.path.join(base, uri)
+    return open(bin_path, "rb").read()
+
+def _gltf_accessor_read_vec3_f32(g: Dict[str, Any], bin_data: bytes, acc_i: int) -> List[Tuple[float,float,float]]:
+    acc = g["accessors"][acc_i]
+    if acc.get("componentType") != 5126 or acc.get("type") != "VEC3":
+        raise ValueError(f"Accessor {acc_i} not float32 VEC3")
+    count = int(acc["count"])
+    bv = g["bufferViews"][acc["bufferView"]]
+    bv_ofs = int(bv.get("byteOffset", 0))
+    acc_ofs = int(acc.get("byteOffset", 0))
+    start = bv_ofs + acc_ofs
+    stride = int(bv.get("byteStride", 12))
+    out: List[Tuple[float,float,float]] = []
+    for i in range(count):
+        o = start + i*stride
+        x,y,z = struct.unpack_from("<fff", bin_data, o)
+        out.append((float(x), float(y), float(z)))
+    return out
+
+
+def _gltf_accessor_read_vec2_f32(g: Dict[str, Any], bin_data: bytes, acc_i: int) -> List[Tuple[float,float]]:
+    acc = g["accessors"][acc_i]
+    if acc.get("componentType") != 5126 or acc.get("type") != "VEC2":
+        raise ValueError(f"Accessor {acc_i} not float32 VEC2")
+    count = int(acc["count"])
+    bv = g["bufferViews"][acc["bufferView"]]
+    bv_ofs = int(bv.get("byteOffset", 0))
+    acc_ofs = int(acc.get("byteOffset", 0))
+    start = bv_ofs + acc_ofs
+    stride = int(bv.get("byteStride", 8))
+    out: List[Tuple[float,float]] = []
+    for i in range(count):
+        o = start + i*stride
+        x,y = struct.unpack_from("<ff", bin_data, o)
+        out.append((float(x), float(y)))
+    return out
+
+def _gltf_accessor_read_scalar_f32(g: Dict[str, Any], bin_data: bytes, acc_i: int) -> List[float]:
+    acc = g["accessors"][acc_i]
+    if acc.get("componentType") != 5126 or acc.get("type") != "SCALAR":
+        raise ValueError(f"Accessor {acc_i} not float32 SCALAR")
+    count = int(acc["count"])
+    bv = g["bufferViews"][acc["bufferView"]]
+    bv_ofs = int(bv.get("byteOffset", 0))
+    acc_ofs = int(acc.get("byteOffset", 0))
+    start = bv_ofs + acc_ofs
+    stride = int(bv.get("byteStride", 4))
+    out: List[float] = []
+    for i in range(count):
+        o = start + i*stride
+        (x,) = struct.unpack_from("<f", bin_data, o)
+        out.append(float(x))
+    return out
+
+def _gltf_accessor_read_indices(g: Dict[str, Any], bin_data: bytes, acc_i: int) -> List[int]:
+    acc = g["accessors"][acc_i]
+    if acc.get("type") != "SCALAR":
+        raise ValueError(f"Accessor {acc_i} indices not SCALAR")
+    ct = int(acc.get("componentType"))
+    fmt = None
+    if ct == 5121:   # u8
+        fmt = "B"; size = 1
+    elif ct == 5123: # u16
+        fmt = "H"; size = 2
+    elif ct == 5125: # u32
+        fmt = "I"; size = 4
+    else:
+        raise ValueError(f"Unsupported index componentType {ct}")
+    count = int(acc["count"])
+    bv = g["bufferViews"][acc["bufferView"]]
+    bv_ofs = int(bv.get("byteOffset", 0))
+    acc_ofs = int(acc.get("byteOffset", 0))
+    start = bv_ofs + acc_ofs
+    stride = int(bv.get("byteStride", size))
+    out: List[int] = []
+    for i in range(count):
+        o = start + i*stride
+        (x,) = struct.unpack_from("<"+fmt, bin_data, o)
+        out.append(int(x))
+    return out
+
+def gltf_collect_mesh_data(gltf_path: str) -> Dict[str, Dict[str, Any]]:
+    g = _gltf_load_json(gltf_path)
+    bin_data = _gltf_load_bin(g, gltf_path)
+    out: Dict[str, Dict[str, Any]] = {}
+    nodes = g.get("nodes") or []
+    meshes = g.get("meshes") or []
+    for ni, node in enumerate(nodes):
+        if "mesh" not in node:
+            continue
+        name = (node.get("name") or f"node{ni}").strip()
+        mesh = meshes[int(node["mesh"])]
+        prim = (mesh.get("primitives") or [None])[0]
+        if not prim:
+            continue
+        attrs = prim.get("attributes") or {}
+        if "POSITION" not in attrs:
+            continue
+        pos = _gltf_accessor_read_vec3_f32(g, bin_data, int(attrs["POSITION"]))
+        targets = []
+        for tgt in prim.get("targets") or []:
+            if "POSITION" in tgt:
+                targets.append(_gltf_accessor_read_vec3_f32(g, bin_data, int(tgt["POSITION"])))
+        out[name.lower()] = {"name": name, "positions": pos, "targets": targets}
+    return out
+
+def patch_vfx_meshes_from_gltf(template_vfx: str, gltf_path: str, out_vfx: str,
+                              gltf_scale: float = 1.0,
+                              only_meshes: Optional[List[str]] = None,
+                              debug: bool = False) -> None:
+    raw = bytearray(open(template_vfx, "rb").read())
+    hdr, mats, meshes, dummies = parse_vfx(template_vfx)
+    gmap = gltf_collect_mesh_data(gltf_path)
+    only_set = set([m.lower() for m in only_meshes]) if only_meshes else None
+
+    patched_any = False
+    for m in meshes:
+        key = m.name.lower()
+        if only_set is not None and key not in only_set:
+            continue
+        if key not in gmap:
+            raise RuntimeError(f"glTF missing mesh/node named '{m.name}' (case-insensitive)")
+        gd = gmap[key]
+        pos = gd["positions"]
+        if abs(gltf_scale) < 1e-20:
+            raise ValueError("gltf_scale cannot be 0")
+        pos_bl = [(p[0]/gltf_scale, p[1]/gltf_scale, p[2]/gltf_scale) for p in pos]
+        if len(pos_bl) != m.num_vertices:
+            raise RuntimeError(f"Vertex count mismatch for '{m.name}': glTF={len(pos_bl)} vfx={m.num_vertices}. Topology changes are not supported.")
+
+        if m.morph:
+            targets = gd.get("targets") or []
+            expected = max(0, m.num_frames - 1)
+            if len(targets) != expected:
+                raise RuntimeError(f"Morph target count mismatch for '{m.name}': glTF targets={len(targets)} expected={expected} (vfx frames={m.num_frames}).")
+            # frame0 = base, frame i = base + target(i-1)
+            for fi in range(m.num_frames):
+                fr = m.frames[fi]
+                if fr.center_ofs is None or fr.mult_ofs is None or fr.pos_ofs is None:
+                    raise RuntimeError(f"Missing patch offsets for mesh '{m.name}' frame {fi}")
+                if fi == 0:
+                    frame_bl = pos_bl
+                else:
+                    deltas = targets[fi-1]
+                    if len(deltas) != m.num_vertices:
+                        raise RuntimeError(f"Target vertex mismatch for '{m.name}' target {fi-1}")
+                    frame_bl = [(pos_bl[i][0] + deltas[i][0]/gltf_scale,
+                                 pos_bl[i][1] + deltas[i][1]/gltf_scale,
+                                 pos_bl[i][2] + deltas[i][2]/gltf_scale) for i in range(m.num_vertices)]
+                center_rf, mult_rf, pos_s16 = encode_positions_to_s16(frame_bl)
+                _write_vec3_f32(raw, fr.center_ofs, center_rf)
+                _write_vec3_f32(raw, fr.mult_ofs, mult_rf)
+                _write_pos_s16(raw, fr.pos_ofs, pos_s16)
+            patched_any = True
+            if debug:
+                print(f"[PATCH_GLTF] morphed mesh='{m.name}' frames={m.num_frames} patched")
+        else:
+            # patch only frame0 positions
+            fr = m.frames[0]
+            if fr.center_ofs is None or fr.mult_ofs is None or fr.pos_ofs is None:
+                raise RuntimeError(f"Missing patch offsets for mesh '{m.name}' frame0")
+            center_rf, mult_rf, pos_s16 = encode_positions_to_s16(pos_bl)
+            _write_vec3_f32(raw, fr.center_ofs, center_rf)
+            _write_vec3_f32(raw, fr.mult_ofs, mult_rf)
+            _write_pos_s16(raw, fr.pos_ofs, pos_s16)
+            patched_any = True
+            if debug:
+                print(f"[PATCH_GLTF] mesh='{m.name}' patched")
+
+    if not patched_any:
+        raise RuntimeError("No meshes were patched (check names/--only-mesh)")
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_vfx)) or ".", exist_ok=True)
+    with open(out_vfx, "wb") as f:
+        f.write(raw)
+    print("Wrote:", out_vfx)
+
+def patch_vfx_apply_mesh_offsets(template_vfx: str, out_vfx: str, mesh_offsets: Dict[str, Tuple[float,float,float]], scale: float, debug: bool=False) -> None:
+    raw = bytearray(open(template_vfx, "rb").read())
+    hdr, mats, meshes, dummies = parse_vfx(template_vfx)
+    # convert to pre-scale and then to stored basis
+    for m in meshes:
+        key = m.name.lower()
+        if key not in mesh_offsets:
+            continue
+        ox,oy,oz = mesh_offsets[key]
+        if abs(scale) > 1e-12:
+            ox /= scale; oy /= scale; oz /= scale
+        off_rf = blender_to_rf((ox,oy,oz))
+        for fi, fr in enumerate(m.frames):
+            if fr.center_ofs is None:
+                continue
+            if fr.center_rf is None:
+                continue
+            cx,cy,cz = fr.center_rf
+            nx,ny,nz = (cx + off_rf[0], cy + off_rf[1], cz + off_rf[2])
+            _write_vec3_f32(raw, fr.center_ofs, (nx,ny,nz))
+        if debug:
+            print(f"[DEBUG_OFFSET_VFX] mesh='{m.name}' applied offset(bl)=({mesh_offsets[key][0]:.6g},{mesh_offsets[key][1]:.6g},{mesh_offsets[key][2]:.6g})")
+    os.makedirs(os.path.dirname(os.path.abspath(out_vfx)) or ".", exist_ok=True)
+    with open(out_vfx, "wb") as f:
+        f.write(raw)
+    print("Wrote:", out_vfx)
+
+
 def should_bake_constant_scale(scales_rf: List[Tuple[float,float,float]]) -> Optional[Tuple[float,float,float]]:
     if not scales_rf:
         return None
@@ -1281,6 +1606,722 @@ def export_gltf(
     print("Wrote:", out_gltf)
     print("Wrote:", out_bin)
 
+
+
+# ----------------------------
+# True export: glTF -> NEW VFX (v4.6)
+# ----------------------------
+
+def _pack_strz(s: str) -> bytes:
+    return (s or "").encode("ascii", errors="replace") + b"\x00"
+
+def _pack_vec3_rf(v: Tuple[float,float,float]) -> bytes:
+    return struct.pack("<fff", float(v[0]), float(v[1]), float(v[2]))
+
+def _pack_quat_raw(q: Tuple[float,float,float,float]) -> bytes:
+    return struct.pack("<ffff", float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+
+def _pack_uv(uv: Tuple[float,float]) -> bytes:
+    u,v = uv
+    # stored v is negated (see read_uv)
+    return struct.pack("<ff", float(u), float(-v))
+
+def _clamp_i16(x: int) -> int:
+    if x < -32767: return -32767
+    if x >  32767: return  32767
+    return int(x)
+
+def _quantize_positions_rf(pos_rf: List[Tuple[float,float,float]]) -> Tuple[Tuple[float,float,float], Tuple[float,float,float], List[Tuple[int,int,int]]]:
+    # VFX decompression is: pos = center + mult * raw_s16 (no /32767).
+    # Choose center as mid of min/max, mult as half-span / 32767.
+    xs = [p[0] for p in pos_rf]; ys = [p[1] for p in pos_rf]; zs = [p[2] for p in pos_rf]
+    minx,maxx = (min(xs), max(xs)) if xs else (0.0,0.0)
+    miny,maxy = (min(ys), max(ys)) if ys else (0.0,0.0)
+    minz,maxz = (min(zs), max(zs)) if zs else (0.0,0.0)
+    cx = (minx+maxx)*0.5
+    cy = (miny+maxy)*0.5
+    cz = (minz+maxz)*0.5
+    sx = (maxx-minx)*0.5
+    sy = (maxy-miny)*0.5
+    sz = (maxz-minz)*0.5
+    mx = (sx/32767.0) if sx != 0.0 else 0.0
+    my = (sy/32767.0) if sy != 0.0 else 0.0
+    mz = (sz/32767.0) if sz != 0.0 else 0.0
+
+    out: List[Tuple[int,int,int]] = []
+    for (x,y,z) in pos_rf:
+        if mx != 0.0:
+            ix = _clamp_i16(int(round((x - cx) / mx)))
+        else:
+            ix = 0
+        if my != 0.0:
+            iy = _clamp_i16(int(round((y - cy) / my)))
+        else:
+            iy = 0
+        if mz != 0.0:
+            iz = _clamp_i16(int(round((z - cz) / mz)))
+        else:
+            iz = 0
+        out.append((ix,iy,iz))
+    return ( (cx,cy,cz), (mx,my,mz), out )
+
+def _tri_normal(a, b, c) -> Tuple[float,float,float]:
+    ax,ay,az = a; bx,by,bz = b; cx,cy,cz = c
+    ux,uy,uz = (bx-ax, by-ay, bz-az)
+    vx,vy,vz = (cx-ax, cy-ay, cz-az)
+    nx = uy*vz - uz*vy
+    ny = uz*vx - ux*vz
+    nz = ux*vy - uy*vx
+    l = math.sqrt(nx*nx + ny*ny + nz*nz)
+    if l < 1e-20:
+        return (0.0,0.0,0.0)
+    return (nx/l, ny/l, nz/l)
+
+def _bounds_center_radius(pts: List[Tuple[float,float,float]]) -> Tuple[Tuple[float,float,float], float]:
+    if not pts:
+        return (0.0,0.0,0.0), 0.0
+    xs=[p[0] for p in pts]; ys=[p[1] for p in pts]; zs=[p[2] for p in pts]
+    cx=(min(xs)+max(xs))*0.5
+    cy=(min(ys)+max(ys))*0.5
+    cz=(min(zs)+max(zs))*0.5
+    r=0.0
+    for (x,y,z) in pts:
+        dx=x-cx; dy=y-cy; dz=z-cz
+        d=math.sqrt(dx*dx+dy*dy+dz*dz)
+        if d>r: r=d
+    return (cx,cy,cz), float(r)
+
+def _gltf_parent_map(nodes: List[Dict[str,Any]]) -> Dict[int,int]:
+    parent: Dict[int,int] = {}
+    for pi, n in enumerate(nodes):
+        for ci in (n.get("children") or []):
+            parent[int(ci)] = pi
+    return parent
+
+def _gltf_find_weights_anim(g: Dict[str,Any], bin_data: bytes, node_index: int) -> Optional[Tuple[List[float], List[float], int]]:
+    # returns (times, weights_flat, num_targets) if found
+    for anim in (g.get("animations") or []):
+        chans = anim.get("channels") or []
+        samps = anim.get("samplers") or []
+        for ch in chans:
+            tgt = ch.get("target") or {}
+            if int(tgt.get("node", -1)) != int(node_index):
+                continue
+            if tgt.get("path") != "weights":
+                continue
+            si = int(ch.get("sampler"))
+            samp = samps[si]
+            t_acc = int(samp["input"])
+            w_acc = int(samp["output"])
+            times = _gltf_accessor_read_scalar_f32(g, bin_data, t_acc)
+            weights = _gltf_accessor_read_scalar_f32(g, bin_data, w_acc)
+            # We infer num_targets from weights length / times
+            if len(times) > 0:
+                num_targets = int(len(weights) / len(times))
+            else:
+                num_targets = 0
+            return (times, weights, num_targets)
+    return None
+
+def _infer_fps_from_times(times: List[float], default_fps: int = 15) -> int:
+    if not times or len(times) < 2:
+        return default_fps
+    diffs = [times[i+1]-times[i] for i in range(len(times)-1)]
+    diffs = [d for d in diffs if d > 1e-6]
+    if not diffs:
+        return default_fps
+    dt = sorted(diffs)[len(diffs)//2]
+    fps = int(round(1.0 / dt)) if dt > 1e-6 else default_fps
+    if fps <= 0: fps = default_fps
+    return fps
+
+def _write_vfx_header(version: int,
+                      flags: int,
+                      end_frame: int,
+                      counts: Dict[str,int]) -> bytes:
+    # Must match parse_header() read order.
+    out = bytearray()
+    out += b"VSFX"
+    out += struct.pack("<i", int(version))
+    out += struct.pack("<i", int(flags))
+    out += struct.pack("<i", int(end_frame))
+
+    def w(k: str):
+        out.extend(struct.pack("<i", int(counts.get(k, 0))))
+
+    for k in ["num_meshes","num_lights","num_dummies","num_particle_systems","num_spacewarps","num_cameras"]:
+        w(k)
+    w("num_selsets")
+    w("num_materials")
+    w("num_mix_frames")
+    w("num_self_illumination_frames")
+    w("num_opacity_frames")
+
+    # version >= 0x3000A so no unk_1
+
+    for k in ["num_faces","num_mesh_material_indices","num_vertex_normals","num_adjacent_faces","num_mesh_frames"]:
+        w(k)
+    w("num_uv_frames")
+
+    for k in ["num_mesh_transform_frames","num_mesh_transform_keyframe_lists","num_mesh_translation_keys","num_mesh_rotation_keys","num_mesh_scale_keys"]:
+        w(k)
+
+    for k in ["num_light_frames","num_dummy_frames","num_part_sys_frames","num_spacewarp_frames","num_camera_frames"]:
+        w(k)
+    w("num_selset_objects")
+    return bytes(out)
+
+def _make_matl_section(tex0: str, fps: int = 15, additive: int = 0) -> bytes:
+    # Mirror the layout observed in CTFflag-blue (v4.6 image material)
+    out = bytearray()
+    out += struct.pack("<i", 0)            # mat_type = image
+    out += struct.pack("<i", int(fps))     # fps
+    out += struct.pack("<b", int(additive))
+    out += _pack_strz(tex0)
+    out += struct.pack("<i", 0)            # start_frame
+    out += struct.pack("<f", 1.0)          # playback_rate
+    out += struct.pack("<i", 2)            # anim_type (once)
+    out += struct.pack("<f", 0.0)          # spec
+    out += struct.pack("<f", 0.0)          # gloss
+    out += struct.pack("<f", 0.0)          # refl
+    out += _pack_strz("")                  # unknown string
+    out += struct.pack("<i", 1)            # n_self_illum
+    out += struct.pack("<f", 0.0)
+    out += struct.pack("<i", 1)            # n_opacity
+    out += struct.pack("<f", 1.0)
+    return bytes(out)
+
+def _section(type_u32: int, body: bytes) -> bytes:
+    # section header: type + len (len includes itself, not type)
+    return struct.pack("<II", int(type_u32), int(len(body) + 4)) + body
+
+def export_new_vfx_from_gltf(gltf_path: str,
+                             out_vfx: str,
+                             gltf_scale: float = 1.0,
+                             anchor: Optional[str] = None,
+                             prop_flip_z: bool = False,
+                             debug: bool = False) -> None:
+    g = _gltf_load_json(gltf_path)
+    bin_data = _gltf_load_bin(g, gltf_path)
+    nodes = g.get("nodes") or []
+    parent_map = _gltf_parent_map(nodes)
+    meshes_g = g.get("meshes") or []
+
+    # --- optional anchor recenter ---
+    # Moves the entire effect so that the chosen node's WORLD position becomes (0,0,0),
+    # by subtracting that world translation from all ROOT nodes (parent == Scene Root).
+    # This preserves local child relationships.
+    def _mat4_mul(a, b):
+        out = [[0.0]*4 for _ in range(4)]
+        for i in range(4):
+            for j in range(4):
+                out[i][j] = a[i][0]*b[0][j] + a[i][1]*b[1][j] + a[i][2]*b[2][j] + a[i][3]*b[3][j]
+        return out
+
+    def _mat4_from_trs(t, q, s):
+        m3 = quat_to_mat3(q)
+        # apply scale on columns
+        rs = (
+            (m3[0][0]*s[0], m3[0][1]*s[1], m3[0][2]*s[2]),
+            (m3[1][0]*s[0], m3[1][1]*s[1], m3[1][2]*s[2]),
+            (m3[2][0]*s[0], m3[2][1]*s[1], m3[2][2]*s[2]),
+        )
+        return [
+            [rs[0][0], rs[0][1], rs[0][2], t[0]],
+            [rs[1][0], rs[1][1], rs[1][2], t[1]],
+            [rs[2][0], rs[2][1], rs[2][2], t[2]],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+
+    world_cache = {}
+    def _node_world_mat(i):
+        if i in world_cache:
+            return world_cache[i]
+        node = nodes[i] or {}
+        t = node.get("translation") or [0.0,0.0,0.0]
+        r = node.get("rotation") or [0.0,0.0,0.0,1.0]
+        s = node.get("scale") or [1.0,1.0,1.0]
+        local = _mat4_from_trs((float(t[0]),float(t[1]),float(t[2])),
+                               (float(r[0]),float(r[1]),float(r[2]),float(r[3])),
+                               (float(s[0]),float(s[1]),float(s[2])))
+        p = parent_map.get(i, None)
+        if p is None:
+            world = local
+        else:
+            world = _mat4_mul(_node_world_mat(p), local)
+        world_cache[i] = world
+        return world
+
+    anchor_shift = (0.0,0.0,0.0)
+    if anchor:
+        ai = None
+        for ni, node in enumerate(nodes):
+            if (node.get("name") or "").strip() == anchor:
+                ai = ni
+                break
+        if ai is not None:
+            wm = _node_world_mat(ai)
+            anchor_shift = (wm[0][3], wm[1][3], wm[2][3])
+            if debug:
+                print(f"[ANCHOR] node='{anchor}' world_shift={anchor_shift}")
+        else:
+            if debug:
+                print(f"[ANCHOR] node='{anchor}' not found; no shift applied")
+
+
+    # --- materials (global) ---
+    mats: List[str] = []
+    images = g.get("images") or []
+    textures = g.get("textures") or []
+    for mi, mat in enumerate(g.get("materials") or []):
+        tex0 = ""
+        try:
+            pbr = mat.get("pbrMetallicRoughness") or {}
+            bct = (pbr.get("baseColorTexture") or {})
+            ti = bct.get("index")
+            if ti is not None:
+                tex = textures[int(ti)]
+                si = tex.get("source")
+                if si is not None and int(si) < len(images):
+                    tex0 = images[int(si)].get("uri") or ""
+        except Exception:
+            tex0 = ""
+        mats.append(tex0)
+
+    # --- gather objects ---
+    mesh_objs: List[Dict[str,Any]] = []
+    dummy_objs: List[Dict[str,Any]] = []
+
+    for ni, node in enumerate(nodes):
+        name = (node.get("name") or f"node{ni}").strip()
+        parent_i = parent_map.get(ni, None)
+        parent_name = "Scene Root"
+        if parent_i is not None:
+            pn = (nodes[parent_i].get("name") or "").strip()
+            parent_name = pn if pn and pn != "__VFX_ROOT__" else "Scene Root"
+
+        parent_is_mesh = False
+        if parent_i is not None:
+            try:
+                parent_is_mesh = ("mesh" in (nodes[parent_i] or {}))
+            except Exception:
+                parent_is_mesh = False
+
+        t = node.get("translation") or [0.0,0.0,0.0]
+        r = node.get("rotation") or [0.0,0.0,0.0,1.0]
+        s = node.get("scale") or [1.0,1.0,1.0]
+
+        if "mesh" in node:
+            mesh_i = int(node["mesh"])
+            mesh = meshes_g[mesh_i]
+            prim = (mesh.get("primitives") or [None])[0]
+            if not prim:
+                continue
+            attrs = prim.get("attributes") or {}
+            if "POSITION" not in attrs:
+                continue
+            pos = _gltf_accessor_read_vec3_f32(g, bin_data, int(attrs["POSITION"]))
+            uv = None
+            if "TEXCOORD_0" in attrs:
+                uv = _gltf_accessor_read_vec2_f32(g, bin_data, int(attrs["TEXCOORD_0"]))
+            indices = None
+            if "indices" in prim:
+                indices = _gltf_accessor_read_indices(g, bin_data, int(prim["indices"]))
+            else:
+                indices = list(range(len(pos)))
+            if len(indices) % 3 != 0:
+                raise RuntimeError(f"Mesh '{name}' indices not divisible by 3 (only triangles supported).")
+            targets = []
+            for tgt in prim.get("targets") or []:
+                if "POSITION" in tgt:
+                    targets.append(_gltf_accessor_read_vec3_f32(g, bin_data, int(tgt["POSITION"])))
+
+
+            # Apply anchor shift to ROOT nodes only (global recenter)
+            t_b = (float(t[0]), float(t[1]), float(t[2]))
+            r_b = (float(r[0]), float(r[1]), float(r[2]), float(r[3]))
+            s_b = (float(s[0]), float(s[1]), float(s[2]))
+            if parent_name == "Scene Root" and anchor_shift != (0.0,0.0,0.0):
+                t_b = (t_b[0] - anchor_shift[0], t_b[1] - anchor_shift[1], t_b[2] - anchor_shift[2])
+
+            # If this mesh is MORPHED, VFX has no per-mesh TRS for it.
+            # So we must bake the node's local TRS into the vertex positions (base + all morph targets).
+            def _apply_trs(pts, t, q, s):
+                m3 = quat_to_mat3(q)
+                out = []
+                for (x,y,z) in pts:
+                    x2,y2,z2 = x*s[0], y*s[1], z*s[2]
+                    rx = m3[0][0]*x2 + m3[0][1]*y2 + m3[0][2]*z2
+                    ry = m3[1][0]*x2 + m3[1][1]*y2 + m3[1][2]*z2
+                    rz = m3[2][0]*x2 + m3[2][1]*y2 + m3[2][2]*z2
+                    out.append((rx + t[0], ry + t[1], rz + t[2]))
+                return out
+
+            if len(targets) > 0:
+                # bake local TRS into morph vertices
+                if t_b != (0.0,0.0,0.0) or r_b != (0.0,0.0,0.0,1.0) or s_b != (1.0,1.0,1.0):
+                    pos = _apply_trs(pos, t_b, r_b, s_b)
+                    targets = [_apply_trs(tgt, t_b, r_b, s_b) for tgt in targets]
+                    # after baking, clear TRS so we don't also store it
+                    t_b = (0.0,0.0,0.0)
+                    r_b = (0.0,0.0,0.0,1.0)
+                    s_b = (1.0,1.0,1.0)
+            mat_i = int(prim.get("material", 0)) if (prim.get("material") is not None) else 0
+            mesh_objs.append({
+                "node_index": ni,
+                "name": name,
+                "parent_name": parent_name,
+                "parent_is_mesh": bool(parent_is_mesh),
+                "t": (float(t_b[0]), float(t_b[1]), float(t_b[2])),
+                "r": (float(r_b[0]), float(r_b[1]), float(r_b[2]), float(r_b[3])),
+                "s": (float(s_b[0]), float(s_b[1]), float(s_b[2])),
+                "positions": pos,
+                "uv": uv,
+                "indices": indices,
+                "targets": targets,
+                "material_index": mat_i,
+            })
+        else:
+            # Treat '$*' nodes as DMMY (markers/props)
+            if name.startswith("$"):
+                # Optional: flip Z for $prop_* markers (helps match RF attachment orientation)
+                if prop_flip_z and name.startswith("$prop_"):
+                    t_b = (t_b[0], t_b[1], -t_b[2])
+                dummy_objs.append({
+                    "node_index": ni,
+                    "name": name,
+                    "parent_name": parent_name,
+                    "t": (float(t_b[0]), float(t_b[1]), float(t_b[2])),
+                    "r": (float(r_b[0]), float(r_b[1]), float(r_b[2]), float(r_b[3])),
+                })
+
+    # --- infer durations (global end_frame is in 15fps units) ---
+    max_end_time = 0.0
+    morph_meta: Dict[str, Dict[str,Any]] = {}
+    for mo in mesh_objs:
+        if not mo["targets"]:
+            continue
+        wa = _gltf_find_weights_anim(g, bin_data, int(mo["node_index"]))
+        if wa:
+            times, weights_flat, num_targets = wa
+            fps = _infer_fps_from_times(times, default_fps=15)
+            end_t = float(times[-1]) if times else float((len(mo["targets"]) / float(fps)))
+            morph_meta[mo["name"].lower()] = {"times": times, "weights": weights_flat, "num_targets": num_targets, "fps": fps}
+            if end_t > max_end_time: max_end_time = end_t
+        else:
+            # no anim; still has targets
+            fps = 15
+            end_t = float(len(mo["targets"])) / float(fps) if mo["targets"] else 0.0
+            morph_meta[mo["name"].lower()] = {"times": None, "weights": None, "num_targets": len(mo["targets"]), "fps": fps}
+            if end_t > max_end_time: max_end_time = end_t
+
+    end_frame = int(round(max_end_time * 15.0))
+    if end_frame < 0: end_frame = 0
+
+    if debug:
+        print(f"[NEW_VFX] meshes={len(mesh_objs)} dummies={len(dummy_objs)} materials={len(mats)} end_time={max_end_time:.6f}s end_frame(15fps)={end_frame}")
+
+    # --- build sections ---
+    sec_bytes = bytearray()
+
+    total_faces = 0
+    total_mesh_material_indices = 0
+    total_face_vertices = 0
+    total_adjacent = 0
+    total_mesh_frames = 0
+    total_uv_frames = 0
+    total_dummy_frames = (end_frame + 1) * len(dummy_objs)
+
+    total_keyframe_lists = 0
+    total_translation_keys = 0
+    total_rotation_keys = 0
+    total_scale_keys = 0
+
+    # Mesh sections
+    for mo in mesh_objs:
+        name = mo["name"]
+        parent_name = mo["parent_name"]
+        pos_bl = [(p[0]/gltf_scale, p[1]/gltf_scale, p[2]/gltf_scale) for p in mo["positions"]]
+        uv_bl = None
+        if mo["uv"] is not None:
+            uv_bl = [(u[0], u[1]) for u in mo["uv"]]
+        indices = mo["indices"]
+        num_vertices = len(pos_bl)
+        num_faces = int(len(indices) // 3)
+        total_faces += num_faces
+
+        # materials per mesh (simple: one)
+        total_mesh_material_indices += 1
+
+        # face_vertices table (one entry per face corner)
+        # IMPORTANT: RF expects adjacency lists to exist (used for normal calc). We provide 1 adjacent face per corner.
+        num_face_vertices = num_faces * 3
+        total_face_vertices += num_face_vertices
+        total_adjacent += num_face_vertices  # 1 adjacent face per face_vertex
+
+        # flags
+        is_morph = True if (mo["targets"] and len(mo["targets"]) > 0) else False
+        flags_raw = 0x00000004 if is_morph else 0
+
+        # fps and num_frames
+        fps = 15
+        start_time = 0.0
+        end_time = float(end_frame) / 15.0 if end_frame > 0 else 0.0
+        num_frames = end_frame + 1
+        weights_info = morph_meta.get(name.lower())
+        if is_morph and weights_info:
+            fps = int(weights_info["fps"])
+            if weights_info["times"]:
+                num_frames = int(len(weights_info["times"]))
+                end_time = float(weights_info["times"][-1]) if num_frames > 0 else 0.0
+            else:
+                num_frames = len(mo["targets"]) + 1
+                end_time = float(num_frames - 1) / float(fps) if fps > 0 else 0.0
+        total_mesh_frames += int(num_frames)
+        if uv_bl is not None:
+            total_uv_frames += 1
+
+        # Build faces + uv-per-face-vertex order
+        face_uvs: List[Tuple[float,float]] = []
+        faces_blob = bytearray()
+        for fi in range(num_faces):
+            i0 = int(indices[fi*3+0]); i1 = int(indices[fi*3+1]); i2 = int(indices[fi*3+2])
+            # (ignored) indices
+            faces_blob += struct.pack("<iii", i0, i1, i2)
+            # 3 colors * rgb
+            for _ in range(9):
+                faces_blob += struct.pack("<f", 1.0)
+            a = pos_bl[i0]; b = pos_bl[i1]; c = pos_bl[i2]
+            n_bl = _tri_normal(a,b,c)
+            center_bl = ((a[0]+b[0]+c[0])/3.0, (a[1]+b[1]+c[1])/3.0, (a[2]+b[2]+c[2])/3.0)
+            r = 0.0
+            for v in (a,b,c):
+                dx=v[0]-center_bl[0]; dy=v[1]-center_bl[1]; dz=v[2]-center_bl[2]
+                d=math.sqrt(dx*dx+dy*dy+dz*dz)
+                if d>r: r=d
+
+            faces_blob += _pack_vec3_rf(blender_to_rf(n_bl))
+            faces_blob += _pack_vec3_rf(blender_to_rf(center_bl))
+            faces_blob += struct.pack("<f", float(r))
+            faces_blob += struct.pack("<i", 0)    # material_index (mesh-local)
+            faces_blob += struct.pack("<i", 0)    # smoothing_group
+            fvi0 = fi*3+0; fvi1=fi*3+1; fvi2=fi*3+2
+            faces_blob += struct.pack("<iii", fvi0, fvi1, fvi2)
+
+            if uv_bl is not None:
+                face_uvs.extend([uv_bl[i0], uv_bl[i1], uv_bl[i2]])
+
+        # Bounding sphere
+        bcenter_bl, brad = _bounds_center_radius(pos_bl)
+        bcenter_rf = blender_to_rf(bcenter_bl)
+
+        # Mesh body
+        body = bytearray()
+        body += _pack_strz(name)
+        body += _pack_strz(parent_name)
+        body += struct.pack("<b", 1)  # save_parent
+        body += struct.pack("<i", int(num_vertices))
+        body += struct.pack("<i", int(num_faces))
+        body += faces_blob
+        body += struct.pack("<i", int(fps))
+        body += struct.pack("<f", float(start_time))
+        body += struct.pack("<f", float(end_time))
+        body += struct.pack("<i", int(num_frames))
+
+        body += struct.pack("<i", 1)  # num_materials in mesh
+        body += struct.pack("<i", int(mo["material_index"]))  # global mat index
+
+        body += _pack_vec3_rf(bcenter_rf)
+        body += struct.pack("<f", float(brad))
+        body += struct.pack("<I", int(flags_raw))
+
+        body += struct.pack("<i", int(num_face_vertices))
+        # mesh_face_vertex table: one record per face corner (smoothing_group, vertex_index, u,v, n_adj, adj_faces[])
+        for fi in range(num_faces):
+            for c in range(3):
+                vi = int(indices[fi*3 + c])
+                body += struct.pack("<i", 1)         # smoothing_group (1 is common in RF exports)
+                body += struct.pack("<i", vi)        # vertex index
+                body += struct.pack("<f", 0.0)       # u garbage / legacy
+                body += struct.pack("<f", 0.0)       # v garbage / legacy
+                body += struct.pack("<i", 1)         # num_adjacent_faces
+                body += struct.pack("<i", fi)        # adjacent face index
+
+        is_keyframed = (not is_morph) and (not bool(mo.get("parent_is_mesh", False)))
+
+        if is_keyframed:
+            total_keyframe_lists += 1
+            total_translation_keys += 1
+            total_rotation_keys += 1
+            total_scale_keys += 1
+
+        body += struct.pack("<B", 1 if is_keyframed else 0)  # is_keyframed
+
+        # frames
+        if is_morph:
+            # determine frame absolute positions
+            base = pos_bl
+            targets = mo["targets"]
+            # if weights anim exists, drive frame selection
+            frame_positions: List[List[Tuple[float,float,float]]] = []
+            if weights_info and weights_info.get("times") and weights_info.get("weights") is not None:
+                times = weights_info["times"]
+                wflat = weights_info["weights"]
+                nt = len(targets)
+                for fi in range(len(times)):
+                    w = wflat[fi*nt:(fi+1)*nt] if nt>0 else []
+                    mx = 0.0; mi = -1
+                    for ti,val in enumerate(w):
+                        if val > mx:
+                            mx = val; mi = ti
+                    if mi >= 0 and mx > 0.5:
+                        # frame = base + target[mi]
+                        tp = targets[mi]
+                        frame_positions.append([(base[i][0]+tp[i][0], base[i][1]+tp[i][1], base[i][2]+tp[i][2]) for i in range(num_vertices)])
+                    else:
+                        frame_positions.append(list(base))
+            else:
+                # simple: frame0 base, then each target
+                frame_positions.append(list(base))
+                for tp in targets:
+                    frame_positions.append([(base[i][0]+tp[i][0], base[i][1]+tp[i][1], base[i][2]+tp[i][2]) for i in range(num_vertices)])
+                frame_positions = frame_positions[:num_frames]
+
+            for fi in range(num_frames):
+                pts_bl = frame_positions[fi]
+                pts_rf = [blender_to_rf(p) for p in pts_bl]
+                center_rf, mult_rf, s16s = _quantize_positions_rf(pts_rf)
+                body += _pack_vec3_rf(center_rf)
+                body += _pack_vec3_rf(mult_rf)
+                for (ix,iy,iz) in s16s:
+                    body += struct.pack("<hhh", int(ix), int(iy), int(iz))
+                # UVs only on frame0
+                if fi == 0:
+                    if uv_bl is None:
+                        # still must write something: default 0s
+                        for _ in range(3*num_faces):
+                            body += _pack_uv((0.0,0.0))
+                    else:
+                        for uv in face_uvs:
+                            body += _pack_uv(uv)
+        else:
+            # non-morph: positions only on frame0 (frames >0 usually contain only transforms if not keyframed)
+            pts_rf0 = [blender_to_rf(p) for p in pos_bl]
+            center_rf0, mult_rf0, s16s0 = _quantize_positions_rf(pts_rf0)
+
+            t_bl = mo["t"]
+            r_bl = mo["r"]
+            s_bl = mo["s"]
+
+            for fi in range(num_frames):
+                if fi == 0:
+                    body += _pack_vec3_rf(center_rf0)
+                    body += _pack_vec3_rf(mult_rf0)
+                    for (ix,iy,iz) in s16s0:
+                        body += struct.pack("<hhh", int(ix), int(iy), int(iz))
+                    # UVs frame0 (always present for v>=0x3000D)
+                    if uv_bl is None:
+                        for _ in range(3*num_faces):
+                            body += _pack_uv((0.0,0.0))
+                    else:
+                        for uv in face_uvs:
+                            body += _pack_uv(uv)
+
+                if not is_keyframed:
+                    # Non-keyframed meshes store TRS on every frame
+                    body += _pack_vec3_rf(blender_to_rf(t_bl))
+                    body += _pack_quat_raw(quat_blender_to_rf(r_bl))
+                    body += _pack_vec3_rf((float(s_bl[0]), float(s_bl[2]), float(s_bl[1])))
+
+            if is_keyframed:
+                # Keyframed meshes store pivot + keyframe list (v4.6). Most RF exports use 1 key each.
+                body += _pack_vec3_rf((0.0, 0.0, 0.0))                  # pivot_translation (RF space)
+                body += _pack_quat_raw(quat_blender_to_rf((0.0,0.0,0.0,1.0)))  # pivot_rotation
+                body += _pack_vec3_rf((1.0, 1.0, 1.0))                  # pivot_scale
+
+                # Translation keys
+                body += struct.pack("<i", 1)
+                t_rf = blender_to_rf((t_bl[0]/gltf_scale, t_bl[1]/gltf_scale, t_bl[2]/gltf_scale))
+                body += struct.pack("<i", 0)                 # time (frame*320)
+                body += _pack_vec3_rf(t_rf)                  # value
+                body += _pack_vec3_rf((0.0,0.0,0.0))         # in_tangent
+                body += _pack_vec3_rf((0.0,0.0,0.0))         # out_tangent
+
+                # Rotation keys
+                body += struct.pack("<i", 1)
+                q_rf = quat_blender_to_rf(r_bl)
+                body += struct.pack("<i", 0)                 # time (frame*320)
+                body += _pack_quat_raw(q_rf)                 # value
+                body += struct.pack("<fffff", 0.0,0.0,0.0,0.0,0.0)  # tension, continuity, bias, ease_in, ease_out
+
+                # Scale keys
+                body += struct.pack("<i", 1)
+                s_rf = (float(s_bl[0]), float(s_bl[2]), float(s_bl[1]))
+                body += struct.pack("<i", 0)                 # time (frame*320)
+                body += _pack_vec3_rf(s_rf)                  # value
+                body += _pack_vec3_rf((0.0,0.0,0.0))         # in_tangent
+                body += _pack_vec3_rf((0.0,0.0,0.0))         # out_tangent
+        sec_bytes += _section(SEC_SFXO, bytes(body))
+
+    # Dummy sections
+    for do in dummy_objs:
+        body = bytearray()
+        body += _pack_strz(do["name"])
+        body += _pack_strz(do["parent_name"])
+        body += struct.pack("<B", 1)  # save_parent
+        pos_rf = blender_to_rf(do["t"])
+        q_rf = quat_blender_to_rf(do["r"])
+        body += _pack_vec3_rf(pos_rf)
+        body += _pack_quat_raw(q_rf)
+        body += struct.pack("<i", int(end_frame + 1))
+        for _ in range(end_frame + 1):
+            body += _pack_vec3_rf(pos_rf)
+            body += _pack_quat_raw(q_rf)
+        sec_bytes += _section(SEC_DMMY, bytes(body))
+
+    # Material sections (at end, like sample)
+    for tex0 in mats:
+        sec_bytes += _section(SEC_MATL, _make_matl_section(tex0))
+
+    # --- header counts ---
+    counts = {
+        "num_meshes": len(mesh_objs),
+        "num_lights": 0,
+        "num_dummies": len(dummy_objs),
+        "num_particle_systems": 0,
+        "num_spacewarps": 0,
+        "num_cameras": 0,
+        "num_selsets": 0,
+        "num_materials": len(mats),
+        "num_mix_frames": 0,
+        "num_self_illumination_frames": len(mats),
+        "num_opacity_frames": len(mats),
+        "num_faces": total_faces,
+        "num_mesh_material_indices": total_mesh_material_indices,
+        "num_vertex_normals": total_face_vertices,
+        "num_adjacent_faces": total_adjacent,
+        "num_mesh_frames": total_mesh_frames,
+        "num_uv_frames": total_uv_frames,
+        "num_mesh_transform_frames": 0,
+        "num_mesh_transform_keyframe_lists": total_keyframe_lists,
+        "num_mesh_translation_keys": total_translation_keys,
+        "num_mesh_rotation_keys": total_rotation_keys,
+        "num_mesh_scale_keys": total_scale_keys,
+        "num_light_frames": 0,
+        "num_dummy_frames": total_dummy_frames,
+        "num_part_sys_frames": 0,
+        "num_spacewarp_frames": 0,
+        "num_camera_frames": 0,
+        "num_selset_objects": 0,
+    }
+
+    header = _write_vfx_header(0x00040006, 0, end_frame, counts)
+    os.makedirs(os.path.dirname(os.path.abspath(out_vfx)) or ".", exist_ok=True)
+    with open(out_vfx, "wb") as f:
+        f.write(header)
+        f.write(sec_bytes)
+    print("Wrote:", out_vfx)
+
 def main(argv: List[str]) -> int:
     # Minimal CLI to match your workflow
     args = list(argv)
@@ -1300,54 +2341,143 @@ def main(argv: List[str]) -> int:
         if len(parts) != 3:
             raise ValueError("Expected three comma-separated numbers: x,y,z")
         x = float(parts[0]); y = float(parts[1]); z = float(parts[2])
-        return name, (x,y,z)
+        return name.lower(), (x,y,z)
 
+    # New modes
+    roundtrip_only = False
+    verify_roundtrip = False
+    roundtrip_out: Optional[str] = None
+
+    vfx_out: Optional[str] = None
+    patch_vfx_only = False
+
+    gltf_in: Optional[str] = None
+    gltf_scale = 1.0
+    only_meshes: Optional[List[str]] = None
+    dump_sections = False
+
+    new_from_gltf: Optional[str] = None
+
+
+    anchor_name: Optional[str] = None
     i = 0
     files: List[str] = []
     while i < len(args):
         a = args[i]
         if a == "--debug-frames":
-            debug_frames = True
-            i += 1
-            continue
+            debug_frames = True; i += 1; continue
         if a == "--gltf":
-            out_mode_gltf = True
-            i += 1
-            continue
+            out_mode_gltf = True; i += 1; continue
         if a == "--scale":
             scale = float(args[i+1]); i += 2; continue
         if a == "--trs-scale":
             trs_scale = float(args[i+1]); i += 2; continue
-
         if a == "--mesh-offset":
             name,(x,y,z) = _parse_mesh_offset(args[i+1])
             mesh_offsets[name] = (x,y,z)
-            i += 2
-            continue
+            i += 2; continue
+
+        # Roundtrip writer
+        if a == "--roundtrip-only":
+            roundtrip_only = True; i += 1; continue
+        if a == "--verify-roundtrip":
+            verify_roundtrip = True; i += 1; continue
+        if a == "--roundtrip-out":
+            roundtrip_out = args[i+1]; i += 2; continue
+
+        # VFX output (patch-in-place, size-preserving)
+        if a == "--vfx-out":
+            vfx_out = args[i+1]; i += 2; continue
+        if a == "--patch-vfx-only":
+            patch_vfx_only = True; i += 1; continue
+
+        # Patch from edited glTF into template VFX
+        if a == "--gltf-in":
+            gltf_in = args[i+1]; i += 2; continue
+        if a == "--gltf-scale":
+            gltf_scale = float(args[i+1]); i += 2; continue
+        if a == "--new-vfx-from-gltf":
+            new_from_gltf = args[i+1]; i += 2; continue
+        if a == "--anchor":
+            anchor_name = args[i+1]; i += 2; continue
+
+        if a == "--only-mesh":
+            only_meshes = [s.strip() for s in args[i+1].split(",") if s.strip()]; i += 2; continue
+
+        if a == "--dump-sections":
+            dump_sections = True; i += 1; continue
+
         if a == "--help" or a == "-h":
-            print("Usage: vfx2obj_optionA.py [--gltf] [--debug-frames] [--scale N] [--trs-scale N] [--mesh-offset Name=x,y,z] file1.vfx [file2.vfx ...]")
+            print("Usage:")
+            print("  Export glTF: vfx2obj.py --gltf [--debug-frames] [--scale N] [--trs-scale N] [--mesh-offset Name=x,y,z] file.vfx")
+            print("  Roundtrip:   vfx2obj.py --roundtrip-only [--verify-roundtrip] [--roundtrip-out PATH] file.vfx")
+            print("  Patch VFX (offset): vfx2obj.py --vfx-out PATH --patch-vfx-only --mesh-offset Name=x,y,z file.vfx")
+            print("  Patch VFX from glTF: vfx2obj.py --vfx-out PATH --patch-vfx-only --gltf-in edited.gltf [--gltf-scale N] [--only-mesh a,b] template.vfx")
+            print("  True export: vfx2obj.py --new-vfx-from-gltf scene.gltf --vfx-out PATH [--gltf-scale N] [--anchor NODE] [--prop-flip-z]")
+            print("  New VFX from glTF: vfx2obj.py --new-vfx-from-gltf scene.gltf --vfx-out PATH [--gltf-scale N]")
             return 0
+
         files.append(a)
         i += 1
 
+    # True export: glTF -> new VFX (no template)
+    if new_from_gltf is not None:
+        if vfx_out is None:
+            base = os.path.splitext(os.path.basename(new_from_gltf))[0]
+            out_dir = os.path.dirname(os.path.abspath(new_from_gltf)) or "."
+            vfx_out = os.path.join(out_dir, base + ".vfx")
+        export_new_vfx_from_gltf(new_from_gltf, vfx_out, gltf_scale=gltf_scale, anchor=anchor_name, debug=debug_frames)
+        return 0
+
     if not files:
-        print("No input files. Drag-drop .vfx onto the exe, or run with a .vfx path.")
+        print("No input files. Provide a .vfx path.")
         return 2
 
-    for p in files:
-        if not os.path.isfile(p):
-            print(f"[SKIP] Not a file: {p}")
+    if trs_scale is None:
+        trs_scale = scale
+
+    for in_path in files:
+        if not os.path.isfile(in_path):
+            print(f"[SKIP] Not a file: {in_path}")
             continue
-        in_path = p
+
         base = os.path.splitext(os.path.basename(in_path))[0]
         out_dir = os.path.dirname(os.path.abspath(in_path)) or "."
-        if out_mode_gltf:
-            out_gltf = os.path.join(out_dir, base + ".gltf")
-            export_gltf(in_path, out_gltf, debug_frames=debug_frames, scale=scale, trs_scale=trs_scale, mesh_offsets=mesh_offsets)
-        else:
-            # For now we keep the tool focused on glTF; OBJ path was in earlier builds.
-            out_gltf = os.path.join(out_dir, base + ".gltf")
-            export_gltf(in_path, out_gltf, debug_frames=debug_frames, scale=scale, trs_scale=trs_scale, mesh_offsets=mesh_offsets)
+
+        if dump_sections:
+            # simple dump of section types/lengths
+            data = open(in_path, "rb").read()
+            b = Bin(data)
+            _ = parse_header(b)
+            print(f"=== Sections: {os.path.basename(in_path)} ===")
+            while b.tell() < len(data):
+                sec_type = b.u32()
+                sec_len = b.u32()
+                body_len = sec_len - 4
+                section_end = b.tell() + body_len
+                print(f"  type=0x{sec_type:08X} len={sec_len} body={body_len} at=0x{(b.tell()-8):X}")
+                b.seek(section_end)
+
+        if roundtrip_only:
+            outp = roundtrip_out
+            if outp is None:
+                outp = os.path.join(out_dir, "out", base + ".roundtrip.vfx")
+            roundtrip_copy(in_path, outp, verify=verify_roundtrip)
+            continue
+
+        # Patch VFX output modes
+        if vfx_out is not None and patch_vfx_only:
+            if gltf_in is not None:
+                patch_vfx_meshes_from_gltf(in_path, gltf_in, vfx_out, gltf_scale=gltf_scale, only_meshes=only_meshes, debug=debug_frames)
+            elif mesh_offsets:
+                patch_vfx_apply_mesh_offsets(in_path, vfx_out, mesh_offsets=mesh_offsets, scale=scale, debug=debug_frames)
+            else:
+                raise RuntimeError("--patch-vfx-only requires either --gltf-in or --mesh-offset")
+            continue
+
+        # Default: export glTF
+        out_gltf = os.path.join(out_dir, base + ".gltf")
+        export_gltf(in_path, out_gltf, debug_frames=debug_frames, scale=scale, trs_scale=trs_scale, mesh_offsets=mesh_offsets)
 
     return 0
 
