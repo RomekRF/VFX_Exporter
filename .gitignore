@@ -39,3 +39,6 @@ out_gltf/
 *.mtl
 *.log
 *.tmp
+# --- generated outputs / local scratch ---
+_archive/
+*.roundtrip.vfx
