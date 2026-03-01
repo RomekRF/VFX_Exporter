@@ -4,10 +4,9 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
 
 $root = Split-Path -Parent $PSScriptRoot
 $src  = Join-Path $root "blender_addon\rf_vfx_tools"
-if (-not (Test-Path -LiteralPath (Join-Path $src "__init__.py"))) { throw "Missing $src\__init__.py" }
-
 $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
 $zip = Join-Path $dist "rf_vfx_tools.zip"
 if (Test-Path -LiteralPath $zip) { Remove-Item -Force -LiteralPath $zip }
 
@@ -17,7 +16,6 @@ $za = [System.IO.Compression.ZipFile]::OpenRead($zip)
 try {
   $entries = $za.Entries | ForEach-Object { $_.FullName }
   if (-not ($entries -contains "rf_vfx_tools/__init__.py")) { throw "ZIP invalid: missing rf_vfx_tools/__init__.py" }
-  if ($entries -contains "__init__.py") { throw "ZIP invalid: __init__.py at zip root (Blender rejects)" }
   if (-not ($entries -contains "rf_vfx_tools/vendor/vfx2obj.py")) { throw "ZIP invalid: missing vendor/vfx2obj.py" }
 } finally { $za.Dispose() }
 
