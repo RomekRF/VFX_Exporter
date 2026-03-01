@@ -1,315 +1,271 @@
 bl_info = {
-    "name": "RF VFX Tools (vfx2obj wrapper)",
-    "author": "RomekRF + ChatGPT",
-    "version": (0, 2, 0),
+    "name": "RF VFX Tools",
+    "author": "RomekRF",
+    "version": (0, 3, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > RF VFX",
-    "description": "Phase 2: persistent settings, glTF export button, selection->--only-mesh, trueexport + pivot×key0 fix.",
+    "description": "Standalone RF1 VFX (.vfx) <-> glTF workflow (Import + Export). Ships with converter in the add-on.",
     "category": "Import-Export",
 }
 
 import bpy
 import os
-import subprocess
+import sys
+import io
+import runpy
+import shutil
+import tempfile
+import traceback
+from contextlib import redirect_stdout, redirect_stderr
 from bpy.props import (
     StringProperty, BoolProperty, FloatProperty, PointerProperty
 )
 
-def _prefs():
-    return bpy.context.preferences.addons[__name__].preferences
+SUPPORTED_VFX_VERSIONS = {0x00040006}  # v4.6 (validated pipeline)
 
-def _repo_root():
-    p = bpy.path.abspath(_prefs().repo_root).strip()
-    return p
+def _addon_dir():
+    return os.path.dirname(__file__)
 
-def _python_exe():
-    p = bpy.path.abspath(_prefs().python_exe).strip()
-    if p:
-        return p
-    repo = _repo_root()
-    venv = os.path.join(repo, ".venv", "Scripts", "python.exe")
-    if repo and os.path.exists(venv):
-        return venv
-    return "python"
+def _vendor_dir():
+    return os.path.join(_addon_dir(), "vendor")
 
-def _run(cmd, cwd=None):
-    print("[RFVFX] RUN:", " ".join(cmd))
-    p = subprocess.run(
-        cmd,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        shell=False,
-    )
-    print(p.stdout)
-    if p.returncode != 0:
-        raise RuntimeError(f"Command failed ({p.returncode}). See Blender system console for output.")
-    return p.stdout
+def _log_textblock():
+    name = "RFVFX_Log"
+    txt = bpy.data.texts.get(name)
+    if txt is None:
+        txt = bpy.data.texts.new(name)
+    return txt
 
-def _selected_mesh_names():
-    names = []
-    for obj in bpy.context.selected_objects or []:
-        if obj.type == "MESH":
-            names.append(obj.name)
-    # stable + unique
-    out = []
-    for n in names:
-        if n not in out:
-            out.append(n)
-    return out
+def _write_log(header: str, body: str):
+    txt = _log_textblock()
+    txt.clear()
+    txt.write(header + "\n\n" + body)
+    # try to show it
+    for area in bpy.context.screen.areas:
+        if area.type == "TEXT_EDITOR":
+            area.spaces.active.text = txt
+            break
 
-def _default_out_vfx_from_gltf(gltf_path: str, suffix: str) -> str:
-    base, _ = os.path.splitext(gltf_path)
-    return base + suffix + ".vfx"
+def _popup(msg: str, title="RF VFX"):
+    def draw(self, _context):
+        for line in msg.splitlines():
+            self.layout.label(text=line)
+    bpy.context.window_manager.popup_menu(draw, title=title, icon="INFO")
 
-class RFVFX_Prefs(bpy.types.AddonPreferences):
-    bl_idname = __name__
+def _read_vfx_version(path: str):
+    try:
+        with open(path, "rb") as f:
+            b = f.read(8)
+        if len(b) < 8 or b[:4] != b"VSFX":
+            return None
+        return int.from_bytes(b[4:8], "little", signed=False)
+    except Exception:
+        return None
 
-    repo_root: StringProperty(
-        name="Repo Root",
-        description="Folder containing vfx2obj.py (e.g. C:\\Users\\Romek\\OneDrive\\Desktop\\vfx2obj_build)",
-        default="",
-        subtype="DIR_PATH",
-    )
+def _run_vendor_script(script_name: str, argv: list[str], cwd: str | None = None):
+    """
+    Runs vendor/<script_name> like a CLI (in-process), capturing stdout/stderr.
+    Returns (output_text).
+    """
+    vdir = _vendor_dir()
+    script_path = os.path.join(vdir, script_name)
+    if not os.path.exists(script_path):
+        raise RuntimeError(f"Missing vendor script: {script_name}")
 
-    python_exe: StringProperty(
-        name="Python Executable (optional)",
-        description="If blank, tries RepoRoot\\.venv\\Scripts\\python.exe, else uses 'python'.",
-        default="",
-        subtype="FILE_PATH",
-    )
+    old_argv = sys.argv[:]
+    old_cwd = os.getcwd()
+    old_syspath = sys.path[:]
 
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "repo_root")
-        layout.prop(self, "python_exe")
+    buf = io.StringIO()
+    try:
+        sys.path.insert(0, vdir)  # allow local imports from vendor/
+        sys.argv = [script_name] + argv
+        if cwd:
+            os.chdir(cwd)
+        with redirect_stdout(buf), redirect_stderr(buf):
+            runpy.run_path(script_path, run_name="__main__")
+    finally:
+        sys.argv = old_argv
+        sys.path = old_syspath
+        try:
+            os.chdir(old_cwd)
+        except Exception:
+            pass
+
+    return buf.getvalue()
 
 class RFVFX_Settings(bpy.types.PropertyGroup):
-    # Import
-    import_vfx: StringProperty(name="Import VFX", subtype="FILE_PATH", default="")
-    import_anchor: StringProperty(name="Anchor (optional)", default="flagpole")
-    import_debug: BoolProperty(name="--debug-frames", default=False)
-    import_scale: FloatProperty(name="--scale", default=1.0, min=0.0001, max=100000.0)
+    # --- Import ---
+    import_vfx: StringProperty(name="VFX File", subtype="FILE_PATH", default="")
+    import_scale: FloatProperty(name="Scale", default=1.0, min=0.0001, max=100000.0)
+    import_anchor: StringProperty(name="Anchor (optional)", default="")
+    import_debug: BoolProperty(name="Debug", default=False)
 
-    # Export glTF from Blender
-    export_gltf: StringProperty(name="Export glTF", subtype="FILE_PATH", default="")
-    export_selected_only: BoolProperty(name="Export Selected Only", default=False)
-    export_apply: BoolProperty(name="Apply Transforms", default=True)
+    # --- Export ---
+    export_vfx_out: StringProperty(name="Output VFX", subtype="FILE_PATH", default="")
+    export_template_vfx: StringProperty(name="Template VFX (optional)", subtype="FILE_PATH", default="")
+    export_gltf_scale: FloatProperty(name="glTF Scale", default=1.0, min=0.0001, max=100000.0)
+    export_anchor: StringProperty(name="Anchor (optional)", default="")
+    export_selected_only: BoolProperty(name="Selected Only", default=False)
+    export_apply_transforms: BoolProperty(name="Apply Transforms", default=True)
 
-    # Patch VFX from glTF
-    patch_template_vfx: StringProperty(name="Template VFX", subtype="FILE_PATH", default="")
-    patch_gltf_in: StringProperty(name="glTF In", subtype="FILE_PATH", default="")
-    patch_vfx_out: StringProperty(name="Patched VFX Out", subtype="FILE_PATH", default="")
-    patch_gltf_scale: FloatProperty(name="--gltf-scale", default=1.0, min=0.0001, max=100000.0)
-    patch_only_selected_meshes: BoolProperty(name="Use selected meshes as --only-mesh", default=True)
-    patch_only_mesh_csv: StringProperty(name="--only-mesh (csv override)", default="")
+    # UX
+    show_import_advanced: BoolProperty(name="Advanced", default=False)
+    show_export_advanced: BoolProperty(name="Advanced", default=False)
+    keep_temp: BoolProperty(name="Keep Temp Files", default=False)
 
-    # True export + pivot fix
-    true_template_vfx: StringProperty(name="Pivot Template VFX", subtype="FILE_PATH", default="")
-    true_gltf_in: StringProperty(name="glTF In", subtype="FILE_PATH", default="")
-    true_vfx_out: StringProperty(name="TrueExport VFX Out", subtype="FILE_PATH", default="")
-    true_gltf_scale: FloatProperty(name="--gltf-scale", default=1.0, min=0.0001, max=100000.0)
-    true_anchor: StringProperty(name="--anchor (optional)", default="flagpole")
-    true_apply_pivot_fix: BoolProperty(name="Apply pivot×key0 fix (recommended)", default=True)
-
-class RFVFX_OT_VfxToGltf(bpy.types.Operator):
-    bl_idname = "rfvfx.vfx_to_gltf"
-    bl_label = "VFX -> glTF (and import)"
+class RFVFX_OT_ImportVFX(bpy.types.Operator):
+    bl_idname = "rfvfx.import_vfx"
+    bl_label = "Import VFX"
     bl_options = {"REGISTER"}
 
     def execute(self, context):
-        prefs = _prefs()
-        repo = _repo_root()
-        if not repo or not os.path.exists(repo):
-            self.report({"ERROR"}, "Set Repo Root in add-on preferences.")
-            return {"CANCELLED"}
-
-        vfx2obj = os.path.join(repo, "vfx2obj.py")
-        if not os.path.exists(vfx2obj):
-            self.report({"ERROR"}, "vfx2obj.py not found under Repo Root.")
-            return {"CANCELLED"}
-
         s = context.scene.rfvfx
-        vfx = bpy.path.abspath(s.import_vfx)
+        vfx = bpy.path.abspath(s.import_vfx).strip()
+
         if not vfx or not os.path.exists(vfx):
-            self.report({"ERROR"}, "Pick a valid VFX file.")
+            self.report({"ERROR"}, "Pick a valid .vfx file.")
             return {"CANCELLED"}
 
-        cmd = [_python_exe(), vfx2obj, "--gltf", "--scale", str(s.import_scale)]
+        ver = _read_vfx_version(vfx)
+        if ver is None:
+            _popup("Not a VSFX file (bad header).", title="RF VFX: Import")
+            return {"CANCELLED"}
+
+        if ver not in SUPPORTED_VFX_VERSIONS:
+            _popup(
+                f"Unsupported VFX version: 0x{ver:08X}\n\n"
+                f"Currently supported: 0x00040006 (v4.6)\n\n"
+                f"This file is an older RF VFX format. We can add support later,\n"
+                f"but it won't import with the current converter.",
+                title="RF VFX: Import"
+            )
+            return {"CANCELLED"}
+
+        # run conversion: VFX -> glTF (writes next to input)
+        args = ["--gltf", "--scale", str(s.import_scale)]
         if s.import_debug:
-            cmd.append("--debug-frames")
+            args.append("--debug-frames")
         if s.import_anchor.strip():
-            cmd += ["--anchor", s.import_anchor.strip()]
-        cmd.append(vfx)
+            args += ["--anchor", s.import_anchor.strip()]
+        args.append(vfx)
 
-        _run(cmd, cwd=repo)
+        header = f"RF VFX Import\nInput: {vfx}\nVersion: 0x{ver:08X}\n\nCommand:\n  vfx2obj.py " + " ".join(args)
 
-        gltf = os.path.splitext(vfx)[0] + ".gltf"
-        if os.path.exists(gltf):
-            bpy.ops.import_scene.gltf(filepath=gltf)
+        try:
+            out = _run_vendor_script("vfx2obj.py", args, cwd=_vendor_dir())
+            _write_log(header, out)
 
-        self.report({"INFO"}, "Done. Check system console for logs.")
+            gltf = os.path.splitext(vfx)[0] + ".gltf"
+            if os.path.exists(gltf):
+                bpy.ops.import_scene.gltf(filepath=gltf)
+                self.report({"INFO"}, "Imported glTF into Blender.")
+            else:
+                _popup("Conversion finished but glTF was not found next to the VFX.\nCheck RFVFX_Log.", title="RF VFX: Import")
+                return {"CANCELLED"}
+
+        except Exception as e:
+            tb = traceback.format_exc()
+            _write_log(header, f"ERROR:\n{e}\n\n{tb}")
+            _popup("Import failed. Open the Text Editor and read RFVFX_Log.", title="RF VFX: Import")
+            return {"CANCELLED"}
+
         return {"FINISHED"}
 
-class RFVFX_OT_ExportGltf(bpy.types.Operator):
-    bl_idname = "rfvfx.export_gltf"
-    bl_label = "Export glTF (for VFX workflow)"
+class RFVFX_OT_ExportVFX(bpy.types.Operator):
+    bl_idname = "rfvfx.export_vfx"
+    bl_label = "Export VFX"
     bl_options = {"REGISTER"}
 
     def execute(self, context):
         s = context.scene.rfvfx
-        outp = bpy.path.abspath(s.export_gltf).strip()
-        if not outp:
-            self.report({"ERROR"}, "Set an Export glTF path.")
+        out_vfx = bpy.path.abspath(s.export_vfx_out).strip()
+        tmpl_vfx = bpy.path.abspath(s.export_template_vfx).strip()
+
+        if not out_vfx:
+            self.report({"ERROR"}, "Set Output VFX path.")
             return {"CANCELLED"}
 
-        out_dir = os.path.dirname(outp)
+        out_dir = os.path.dirname(out_vfx)
         if out_dir and not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
 
-        bpy.ops.export_scene.gltf(
-            filepath=outp,
-            export_format="GLTF_SEPARATE",
-            use_selection=bool(s.export_selected_only),
-            export_apply=bool(s.export_apply),
+        # Optional template (enables pivot×key0 fix for keyframed parents like flagpole)
+        tmpl_ver = None
+        if tmpl_vfx:
+            if not os.path.exists(tmpl_vfx):
+                self.report({"ERROR"}, "Template VFX does not exist.")
+                return {"CANCELLED"}
+            tmpl_ver = _read_vfx_version(tmpl_vfx)
+            if tmpl_ver is None:
+                self.report({"ERROR"}, "Template VFX is not a VSFX file.")
+                return {"CANCELLED"}
+            if tmpl_ver not in SUPPORTED_VFX_VERSIONS:
+                _popup(
+                    f"Template VFX version 0x{tmpl_ver:08X} is not supported for pivot-fix.\n"
+                    f"Expected 0x00040006.\n\n"
+                    f"Export will continue WITHOUT pivot fix.",
+                    title="RF VFX: Export"
+                )
+                tmpl_vfx = ""  # disable pivot fix
+
+        # Create temp working dir
+        tmpdir = tempfile.mkdtemp(prefix="rfvfx_")
+        gltf_path = os.path.join(tmpdir, "scene.gltf")
+        tmp_vfx = os.path.join(tmpdir, "trueexport_tmp.vfx")
+
+        header = (
+            "RF VFX Export\n"
+            f"Output: {out_vfx}\n"
+            f"Template: {tmpl_vfx or '(none)'}\n\n"
         )
 
-        self.report({"INFO"}, "glTF exported.")
-        return {"FINISHED"}
+        try:
+            # Export glTF from Blender
+            bpy.ops.export_scene.gltf(
+                filepath=gltf_path,
+                export_format="GLTF_SEPARATE",
+                use_selection=bool(s.export_selected_only),
+                export_apply=bool(s.export_apply_transforms),
+            )
 
-class RFVFX_OT_PatchFromGltf(bpy.types.Operator):
-    bl_idname = "rfvfx.patch_from_gltf"
-    bl_label = "Patch VFX from glTF"
-    bl_options = {"REGISTER"}
+            # True export glTF -> brand-new VFX
+            args = ["--new-vfx-from-gltf", gltf_path, "--vfx-out", tmp_vfx, "--gltf-scale", str(s.export_gltf_scale)]
+            if s.export_anchor.strip():
+                args += ["--anchor", s.export_anchor.strip()]
 
-    def execute(self, context):
-        repo = _repo_root()
-        if not repo or not os.path.exists(repo):
-            self.report({"ERROR"}, "Set Repo Root in add-on preferences.")
-            return {"CANCELLED"}
+            header += "Command (trueexport):\n  vfx2obj.py " + " ".join(args) + "\n"
+            out1 = _run_vendor_script("vfx2obj.py", args, cwd=_vendor_dir())
 
-        vfx2obj = os.path.join(repo, "vfx2obj.py")
-        if not os.path.exists(vfx2obj):
-            self.report({"ERROR"}, "vfx2obj.py not found under Repo Root.")
-            return {"CANCELLED"}
+            # Apply pivot fix if template provided
+            out2 = ""
+            if tmpl_vfx:
+                args2 = ["--template", tmpl_vfx, "--in", tmp_vfx, "--out", out_vfx]
+                header += "\nCommand (pivot fix):\n  pivot_patch_xkey0.py " + " ".join(args2) + "\n"
+                out2 = _run_vendor_script("pivot_patch_xkey0.py", args2, cwd=_vendor_dir())
+            else:
+                shutil.copyfile(tmp_vfx, out_vfx)
 
-        s = context.scene.rfvfx
-        tmpl = bpy.path.abspath(s.patch_template_vfx).strip()
-        gltf = bpy.path.abspath(s.patch_gltf_in).strip()
-        outv = bpy.path.abspath(s.patch_vfx_out).strip()
+            _write_log(header, out1 + ("\n\n" + out2 if out2 else ""))
 
-        if not (tmpl and os.path.exists(tmpl)):
-            self.report({"ERROR"}, "Pick a valid Template VFX.")
-            return {"CANCELLED"}
-        if not (gltf and os.path.exists(gltf)):
-            self.report({"ERROR"}, "Pick a valid glTF In.")
-            return {"CANCELLED"}
+            if not s.keep_temp:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            else:
+                _popup(f"Temp kept at:\n{tmpdir}", title="RF VFX: Export")
 
-        if not outv:
-            outv = _default_out_vfx_from_gltf(gltf, ".patched")
-            s.patch_vfx_out = outv
+            self.report({"INFO"}, "Exported VFX.")
+            return {"FINISHED"}
 
-        out_dir = os.path.dirname(outv)
-        if out_dir and not os.path.exists(out_dir):
-            os.makedirs(out_dir, exist_ok=True)
-
-        only_mesh = ""
-        if s.patch_only_mesh_csv.strip():
-            only_mesh = s.patch_only_mesh_csv.strip()
-        elif s.patch_only_selected_meshes:
-            sel = _selected_mesh_names()
-            if sel:
-                only_mesh = ",".join(sel)
-
-        cmd = [
-            _python_exe(), vfx2obj,
-            "--vfx-out", outv,
-            "--patch-vfx-only",
-            "--gltf-in", gltf,
-            "--gltf-scale", str(s.patch_gltf_scale),
-        ]
-        if only_mesh:
-            cmd += ["--only-mesh", only_mesh]
-        cmd.append(tmpl)
-
-        _run(cmd, cwd=repo)
-        self.report({"INFO"}, "Patched VFX written.")
-        return {"FINISHED"}
-
-class RFVFX_OT_TrueExportPivotFix(bpy.types.Operator):
-    bl_idname = "rfvfx.trueexport_pivotfix"
-    bl_label = "TrueExport + PivotFix"
-    bl_options = {"REGISTER"}
-
-    def execute(self, context):
-        repo = _repo_root()
-        if not repo or not os.path.exists(repo):
-            self.report({"ERROR"}, "Set Repo Root in add-on preferences.")
-            return {"CANCELLED"}
-
-        vfx2obj = os.path.join(repo, "vfx2obj.py")
-        pivot_tool = os.path.join(repo, "tools", "pivot_patch_xkey0.py")
-        if not (os.path.exists(vfx2obj) and os.path.exists(pivot_tool)):
-            self.report({"ERROR"}, "Missing vfx2obj.py or tools\\pivot_patch_xkey0.py")
-            return {"CANCELLED"}
-
-        s = context.scene.rfvfx
-        tmpl = bpy.path.abspath(s.true_template_vfx).strip()
-        gltf = bpy.path.abspath(s.true_gltf_in).strip()
-        outv = bpy.path.abspath(s.true_vfx_out).strip()
-
-        if not (tmpl and os.path.exists(tmpl)):
-            self.report({"ERROR"}, "Pick a valid Pivot Template VFX.")
-            return {"CANCELLED"}
-        if not (gltf and os.path.exists(gltf)):
-            self.report({"ERROR"}, "Pick a valid glTF In.")
-            return {"CANCELLED"}
-
-        if not outv:
-            outv = _default_out_vfx_from_gltf(gltf, ".trueexport")
-            s.true_vfx_out = outv
-
-        out_dir = os.path.dirname(outv)
-        if out_dir and not os.path.exists(out_dir):
-            os.makedirs(out_dir, exist_ok=True)
-
-        tmpv = os.path.splitext(outv)[0] + ".__tmp_trueexport.vfx"
-
-        # True export
-        cmd1 = [
-            _python_exe(), vfx2obj,
-            "--new-vfx-from-gltf", gltf,
-            "--vfx-out", tmpv,
-            "--gltf-scale", str(s.true_gltf_scale),
-        ]
-        if s.true_anchor.strip():
-            cmd1 += ["--anchor", s.true_anchor.strip()]
-        _run(cmd1, cwd=repo)
-
-        if s.true_apply_pivot_fix:
-            cmd2 = [
-                _python_exe(), pivot_tool,
-                "--template", tmpl,
-                "--in", tmpv,
-                "--out", outv,
-            ]
-            _run(cmd2, cwd=repo)
+        except Exception as e:
+            tb = traceback.format_exc()
+            _write_log(header, f"ERROR:\n{e}\n\n{tb}")
+            _popup("Export failed. Open the Text Editor and read RFVFX_Log.", title="RF VFX: Export")
             try:
-                os.remove(tmpv)
+                if not s.keep_temp:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
             except Exception:
                 pass
-        else:
-            # no pivot fix requested
-            try:
-                if os.path.exists(outv):
-                    os.remove(outv)
-            except Exception:
-                pass
-            os.replace(tmpv, outv)
-
-        self.report({"INFO"}, "TrueExport written (pivot fix applied if enabled).")
-        return {"FINISHED"}
+            return {"CANCELLED"}
 
 class RFVFX_PT_Panel(bpy.types.Panel):
     bl_label = "RF VFX"
@@ -322,56 +278,44 @@ class RFVFX_PT_Panel(bpy.types.Panel):
         s = context.scene.rfvfx
         layout = self.layout
 
-        col = layout.column(align=True)
-        col.label(text="Import")
-        col.prop(s, "import_vfx")
-        row = col.row(align=True)
-        row.prop(s, "import_scale")
-        row.prop(s, "import_debug")
-        col.prop(s, "import_anchor")
-        col.operator("rfvfx.vfx_to_gltf", icon="IMPORT")
-
-        layout.separator()
-
-        col = layout.column(align=True)
-        col.label(text="Export glTF from Blender")
-        col.prop(s, "export_gltf")
-        row = col.row(align=True)
-        row.prop(s, "export_selected_only")
-        row.prop(s, "export_apply")
-        col.operator("rfvfx.export_gltf", icon="EXPORT")
-
-        layout.separator()
-
+        # IMPORT
         box = layout.box()
-        box.label(text="Patch VFX from glTF (topology must match)")
-        box.prop(s, "patch_template_vfx")
-        box.prop(s, "patch_gltf_in")
-        box.prop(s, "patch_vfx_out")
-        box.prop(s, "patch_gltf_scale")
-        box.prop(s, "patch_only_selected_meshes")
-        box.prop(s, "patch_only_mesh_csv")
-        box.operator("rfvfx.patch_from_gltf", icon="FILE_TICK")
+        row = box.row()
+        row.label(text="Import VFX (.vfx → .gltf)")
+        row.prop(s, "show_import_advanced", text="Advanced", toggle=True)
 
-        layout.separator()
+        box.prop(s, "import_vfx")
+        box.operator("rfvfx.import_vfx", icon="IMPORT")
 
-        box2 = layout.box()
-        box2.label(text="TrueExport + PivotFix (recommended)")
-        box2.prop(s, "true_template_vfx")
-        box2.prop(s, "true_gltf_in")
-        box2.prop(s, "true_vfx_out")
-        box2.prop(s, "true_gltf_scale")
-        box2.prop(s, "true_anchor")
-        box2.prop(s, "true_apply_pivot_fix")
-        box2.operator("rfvfx.trueexport_pivotfix", icon="FILE_TICK")
+        if s.show_import_advanced:
+            col = box.column(align=True)
+            col.prop(s, "import_scale")
+            col.prop(s, "import_anchor")
+            col.prop(s, "import_debug")
+
+        # EXPORT
+        box = layout.box()
+        row = box.row()
+        row.label(text="Export VFX (Blender → .vfx)")
+        row.prop(s, "show_export_advanced", text="Advanced", toggle=True)
+
+        box.prop(s, "export_vfx_out")
+        box.prop(s, "export_template_vfx")
+        box.operator("rfvfx.export_vfx", icon="EXPORT")
+
+        if s.show_export_advanced:
+            col = box.column(align=True)
+            col.prop(s, "export_selected_only")
+            col.prop(s, "export_apply_transforms")
+            col.prop(s, "export_gltf_scale")
+            col.prop(s, "export_anchor")
+            col.separator()
+            col.prop(s, "keep_temp")
 
 _classes = (
-    RFVFX_Prefs,
     RFVFX_Settings,
-    RFVFX_OT_VfxToGltf,
-    RFVFX_OT_ExportGltf,
-    RFVFX_OT_PatchFromGltf,
-    RFVFX_OT_TrueExportPivotFix,
+    RFVFX_OT_ImportVFX,
+    RFVFX_OT_ExportVFX,
     RFVFX_PT_Panel,
 )
 
