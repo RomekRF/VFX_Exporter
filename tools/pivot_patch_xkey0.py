@@ -1,4 +1,4 @@
-import argparse, struct
+import argparse, struct, shutil, os
 
 def i32(b,o): return struct.unpack_from("<i",b,o)[0], o+4
 def u32(b,o): return struct.unpack_from("<I",b,o)[0], o+4
@@ -135,19 +135,20 @@ def mul3(a,b):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Patch VFX pivot_translation using TEMPLATE rule: pivot_t_out = pivot_t_template * key0_scale_template (component-wise). v4.6 only."
+        description="Patch VFX pivot_translation using TEMPLATE rule: pivot_out = pivot_t_template * key0_scale_template (component-wise). v4.6 only."
     )
-    ap.add_argument("--template", required=True, help="Template/original .vfx (source of pivot + key0 scale).")
-    ap.add_argument("--in", dest="invfx", required=True, help="Input .vfx to patch (e.g. TRUEEXPORT output).")
-    ap.add_argument("--out", required=True, help="Output patched .vfx.")
-    ap.add_argument("--mesh", action="append", default=[], help="Optional mesh name(s) to patch. Default: all common keyframed meshes.")
+    ap.add_argument("--template", required=True)
+    ap.add_argument("--in", dest="invfx", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--mesh", action="append", default=[])
+    ap.add_argument("--allow-empty", action="store_true", help="If no matching keyframed meshes exist, copy input->output and exit 0.")
     args = ap.parse_args()
 
     tmpl_b = open(args.template,"rb").read()
-    in_b   = bytearray(open(args.invfx,"rb").read())
+    in_bytes = open(args.invfx,"rb").read()
 
     td = keyframed_info_v46(tmpl_b)
-    nd = keyframed_info_v46(in_b)
+    nd = keyframed_info_v46(in_bytes)
 
     common = sorted(set(td.keys()) & set(nd.keys()))
     if args.mesh:
@@ -155,23 +156,29 @@ def main():
         common = [m for m in common if m in want]
 
     if not common:
-        raise SystemExit("No matching keyframed meshes found to patch.")
+        if args.allow_empty:
+            shutil.copyfile(args.invfx, args.out)
+            print("[PIVOT_FIX] no matching keyframed meshes; copied through (patched_meshes=0).")
+            print("Wrote:", args.out)
+            return
+        raise SystemExit("No matching keyframed meshes found to patch. (Use --allow-empty to copy through.)")
 
+    out_b = bytearray(in_bytes)
     patched = 0
     for name in common:
         piv_t = td[name]["piv_t"]
         piv_r = td[name]["piv_r"]
         key0s = td[name]["key0_s"]
-        out_piv_t = mul3(piv_t, key0s)   # ✅ proven
+        out_piv_t = mul3(piv_t, key0s)  # ✅ proven rule
 
         off = nd[name]["pivot_abs"]
-        struct.pack_into("<3f", in_b, off, *out_piv_t)
-        struct.pack_into("<4f", in_b, off+12, *piv_r)
+        struct.pack_into("<3f", out_b, off, *out_piv_t)
+        struct.pack_into("<4f", out_b, off+12, *piv_r)
 
         patched += 1
         print(f"[PATCH] {name} pivot_t*key0 = {out_piv_t}")
 
-    open(args.out,"wb").write(in_b)
+    open(args.out,"wb").write(out_b)
     print(f"Wrote: {args.out} patched_meshes={patched}")
 
 if __name__=="__main__":
