@@ -1,4 +1,4 @@
-import argparse, struct, sys, os
+import argparse, struct
 
 def i32(b,o): return struct.unpack_from("<i",b,o)[0], o+4
 def u32(b,o): return struct.unpack_from("<I",b,o)[0], o+4
@@ -47,24 +47,25 @@ def skip_frames_v46(b,o,num_frames,num_verts,num_faces,fl,is_keyframed):
             o += 12+16+12
     return o
 
-def read_vec3_kf(b,o):
-    _,o = i32(b,o)        # time
-    v,o = vec3(b,o)       # value
-    o += 12+12            # inTan + outTan
+def read_vec3_kf_value_only(b,o):
+    _,o = i32(b,o)    # time
+    v,o = vec3(b,o)   # value
+    o += 12+12        # inTan + outTan
     return v, o
 
-def read_quat_kf(b,o):
-    _,o = i32(b,o)        # time
-    q,o = quat(b,o)       # value
-    o += 4*5              # ten/cont/bias/easeIn/easeOut
+def read_quat_kf_value_only(b,o):
+    _,o = i32(b,o)    # time
+    q,o = quat(b,o)   # value
+    o += 4*5          # ten/cont/bias/easeIn/easeOut
     return q, o
 
 def keyframed_info_v46(vfx_bytes):
     b=vfx_bytes
-    if b[:4] != b"VSFX": raise SystemExit("Bad magic (expected VSFX).")
+    if b[:4] != b"VSFX":
+        raise SystemExit("Bad magic (expected VSFX).")
     ver = struct.unpack_from("<I", b, 4)[0]
     if ver != 0x00040006:
-        raise SystemExit(f"pivot_patch_xkey0 currently supports v4.6 only (0x00040006). Got 0x{ver:08X}")
+        raise SystemExit(f"pivot_patch_xkey0 supports v4.6 only (0x00040006). Got 0x{ver:08X}")
 
     off = 128
     out = {}
@@ -85,7 +86,7 @@ def keyframed_info_v46(vfx_bytes):
             nv,o = i32(body,o)
             nf,o = i32(body,o)
             o += nf*96
-            _,o = i32(body,o)           # fps
+            _,o = i32(body,o)                    # fps
             _,o = f32(body,o); _,o = f32(body,o); nframes,o = i32(body,o)
             nm,o = i32(body,o)
             o += nm*4
@@ -107,18 +108,16 @@ def keyframed_info_v46(vfx_bytes):
 
                 nt,o3 = i32(body,o2)
                 for _ in range(nt):
-                    _,o3 = read_vec3_kf(body,o3)   # translations
+                    _,o3 = read_vec3_kf_value_only(body,o3)
 
                 nr,o4 = i32(body,o3)
                 for _ in range(nr):
-                    _,o4 = read_quat_kf(body,o4)   # rotations
+                    _,o4 = read_quat_kf_value_only(body,o4)
 
                 ns,o5 = i32(body,o4)
                 key0_s = (1.0,1.0,1.0)
                 if ns > 0:
-                    key0_s,o5 = read_vec3_kf(body,o5)
-                    if ns > 1:
-                        o5 += (ns-1) * (4 + 12 + 12 + 12)
+                    key0_s,o5 = read_vec3_kf_value_only(body,o5)
 
                 out[name] = {
                     "parent": parent,
@@ -135,7 +134,9 @@ def mul3(a,b):
     return (a[0]*b[0], a[1]*b[1], a[2]*b[2])
 
 def main():
-    ap = argparse.ArgumentParser(description="Patch TRUEEXPORT VFX pivot_translation using TEMPLATE VFX rule: pivot_t_out = pivot_t_template * key0_scale_template (component-wise). v4.6 only.")
+    ap = argparse.ArgumentParser(
+        description="Patch VFX pivot_translation using TEMPLATE rule: pivot_t_out = pivot_t_template * key0_scale_template (component-wise). v4.6 only."
+    )
     ap.add_argument("--template", required=True, help="Template/original .vfx (source of pivot + key0 scale).")
     ap.add_argument("--in", dest="invfx", required=True, help="Input .vfx to patch (e.g. TRUEEXPORT output).")
     ap.add_argument("--out", required=True, help="Output patched .vfx.")
@@ -161,17 +162,17 @@ def main():
         piv_t = td[name]["piv_t"]
         piv_r = td[name]["piv_r"]
         key0s = td[name]["key0_s"]
-        out_piv_t = mul3(piv_t, key0s)   # ✅ proven rule
+        out_piv_t = mul3(piv_t, key0s)   # ✅ proven
 
         off = nd[name]["pivot_abs"]
         struct.pack_into("<3f", in_b, off, *out_piv_t)
         struct.pack_into("<4f", in_b, off+12, *piv_r)
-        patched += 1
 
-        print(f"[PATCH] {name}  pivot_t={piv_t}  key0_s={key0s}  => out_pivot_t={out_piv_t}")
+        patched += 1
+        print(f"[PATCH] {name} pivot_t*key0 = {out_piv_t}")
 
     open(args.out,"wb").write(in_b)
-    print(f"\nWrote: {args.out}  patched_meshes={patched}")
+    print(f"Wrote: {args.out} patched_meshes={patched}")
 
 if __name__=="__main__":
     main()
