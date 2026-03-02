@@ -104,38 +104,69 @@ def keyframed_info_v46(vfx_bytes):
                 pivot_abs = body_off + o
                 piv_t,o2 = vec3(body,o)
                 piv_r,o2 = quat(body,o2)
-                _piv_s,o2 = vec3(body,o2)
+                piv_s_abs = body_off + o2
+                piv_s,o2 = vec3(body,o2)
 
+                # Translation keys
                 nt,o3 = i32(body,o2)
-                for _ in range(nt):
-                    _,o3 = read_vec3_kf_value_only(body,o3)
+                key0_t = None
+                key0_t_abs = None
+                for ki in range(nt):
+                    _time,o3 = i32(body,o3)
+                    if ki == 0:
+                        key0_t_abs = body_off + o3
+                    v,o3 = vec3(body,o3)
+                    if ki == 0:
+                        key0_t = v
+                    o3 += 12+12  # inTan + outTan
 
+                # Rotation keys
                 nr,o4 = i32(body,o3)
-                for _ in range(nr):
-                    _,o4 = read_quat_kf_value_only(body,o4)
+                key0_r = None
+                key0_r_abs = None
+                for ki in range(nr):
+                    _time,o4 = i32(body,o4)
+                    if ki == 0:
+                        key0_r_abs = body_off + o4
+                    q,o4 = quat(body,o4)
+                    if ki == 0:
+                        key0_r = q
+                    o4 += 4*5  # tcb
 
+                # Scale keys
                 ns,o5 = i32(body,o4)
-                key0_s = (1.0,1.0,1.0)
-                if ns > 0:
-                    key0_s,o5 = read_vec3_kf_value_only(body,o5)
+                key0_s = None
+                key0_s_abs = None
+                for ki in range(ns):
+                    _time,o5 = i32(body,o5)
+                    if ki == 0:
+                        key0_s_abs = body_off + o5
+                    s,o5 = vec3(body,o5)
+                    if ki == 0:
+                        key0_s = s
+                    o5 += 12+12  # inTan + outTan
 
                 out[name] = {
                     "parent": parent,
                     "pivot_abs": pivot_abs,
                     "piv_t": piv_t,
                     "piv_r": piv_r,
+                    "piv_s": piv_s,
+                    "piv_s_abs": piv_s_abs,
+                    "key0_t": key0_t,
+                    "key0_t_abs": key0_t_abs,
+                    "key0_r": key0_r,
+                    "key0_r_abs": key0_r_abs,
                     "key0_s": key0_s,
+                    "key0_s_abs": key0_s_abs,
                 }
 
         off = sec_end
     return out
 
-def mul3(a,b):
-    return (a[0]*b[0], a[1]*b[1], a[2]*b[2])
-
 def main():
     ap = argparse.ArgumentParser(
-        description="Patch VFX pivot_translation using TEMPLATE rule: pivot_t_out = pivot_t_template * key0_scale_template (component-wise). v4.6 only."
+        description="Patch keyframed mesh pivot + key0 TRS from TEMPLATE into INPUT and write OUT. v4.6 only."
     )
     ap.add_argument("--template", required=True, help="Template/original .vfx (source of pivot + key0 scale).")
     ap.add_argument("--in", dest="invfx", required=True, help="Input .vfx to patch (e.g. TRUEEXPORT output).")
@@ -159,17 +190,26 @@ def main():
 
     patched = 0
     for name in common:
-        piv_t = td[name]["piv_t"]
-        piv_r = td[name]["piv_r"]
-        key0s = td[name]["key0_s"]
-        out_piv_t = mul3(piv_t, key0s)   # ✅ proven
+        t = td[name]
+        n = nd[name]
 
-        off = nd[name]["pivot_abs"]
-        struct.pack_into("<3f", in_b, off, *out_piv_t)
-        struct.pack_into("<4f", in_b, off+12, *piv_r)
+        # Pivot TRS
+        off = n["pivot_abs"]
+        struct.pack_into("<3f", in_b, off, *t["piv_t"])
+        struct.pack_into("<4f", in_b, off+12, *t["piv_r"])
+        if n.get("piv_s_abs") is not None and t.get("piv_s") is not None:
+            struct.pack_into("<3f", in_b, n["piv_s_abs"], *t["piv_s"])
+
+        # Key0 TRS values (if present)
+        if n.get("key0_t_abs") is not None and t.get("key0_t") is not None:
+            struct.pack_into("<3f", in_b, n["key0_t_abs"], *t["key0_t"])
+        if n.get("key0_r_abs") is not None and t.get("key0_r") is not None:
+            struct.pack_into("<4f", in_b, n["key0_r_abs"], *t["key0_r"])
+        if n.get("key0_s_abs") is not None and t.get("key0_s") is not None:
+            struct.pack_into("<3f", in_b, n["key0_s_abs"], *t["key0_s"])
 
         patched += 1
-        print(f"[PATCH] {name} pivot_t*key0 = {out_piv_t}")
+        print(f"[PATCH] {name} pivot+key0 TRS copied from template")
 
     open(args.out,"wb").write(in_b)
     print(f"Wrote: {args.out} patched_meshes={patched}")

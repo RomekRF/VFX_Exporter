@@ -315,7 +315,10 @@ class VfxMesh:
     face_vertices: List[FaceVertex]
     frames: List[MeshFrame]
     keyframes: Optional[MeshKeyframes]
+    pivot_translation_rf: Optional[Tuple[float,float,float]]
+    pivot_rotation_raw: Optional[Tuple[float,float,float,float]]
     pivot_scale_rf: Optional[Tuple[float,float,float]]
+    keyframed_block: Optional[bytes]
 
 @dataclass
 class DummyFrame:
@@ -523,12 +526,16 @@ def parse_mesh(b: Bin, hdr: VfxHeader, section_end: int) -> VfxMesh:
         frames.append(fr)
 
     keyframes: Optional[MeshKeyframes] = None
+    pivot_translation_rf: Optional[Tuple[float,float,float]] = None
+    pivot_rotation_raw: Optional[Tuple[float,float,float,float]] = None
     pivot_scale_rf: Optional[Tuple[float,float,float]] = None
+    keyframed_block: Optional[bytes] = None
+    pivot_block_start: Optional[int] = None
     if is_keyframed:
-        # pivots exist but we ignore for now (we can fold later)
         if ver >= 0x3000A:
-            _ = read_vec3_rf(b)  # pivot_translation (ignored for now)
-            _ = read_quat_raw(b) # pivot_rotation (ignored for now)
+            pivot_block_start = b.tell()
+            pivot_translation_rf = read_vec3_rf(b)
+            pivot_rotation_raw = read_quat_raw(b)
             pivot_scale_rf = read_vec3_rf(b)  # IMPORTANT: used for correct mesh scale
         # keyframe list
         num_t = b.s32()
@@ -565,6 +572,8 @@ def parse_mesh(b: Bin, hdr: VfxHeader, section_end: int) -> VfxMesh:
             r_times=r_times, r_values=r_vals,
             s_times=s_times, s_values=s_vals
         )
+        if pivot_block_start is not None:
+            keyframed_block = b.data[pivot_block_start:b.tell()]
 
     # be safe: jump to section_end
     if b.tell() < section_end:
@@ -590,7 +599,10 @@ def parse_mesh(b: Bin, hdr: VfxHeader, section_end: int) -> VfxMesh:
         face_vertices=face_vertices,
         frames=frames,
         keyframes=keyframes,
-        pivot_scale_rf=pivot_scale_rf
+        pivot_translation_rf=pivot_translation_rf,
+        pivot_rotation_raw=pivot_rotation_raw,
+        pivot_scale_rf=pivot_scale_rf,
+        keyframed_block=keyframed_block,
     )
 
 def parse_dummy(b: Bin, hdr: VfxHeader, section_end: int) -> VfxDummy:
@@ -893,12 +905,29 @@ class GltfBuilder:
                     targets.append({"POSITION": tgt_acc})
                 prim["targets"] = targets
                 # default weights = all 0
-                prim["weights"] = [0.0 for _ in range(len(targets))]
                 morph_info = {"targets_count": len(targets)}
             primitives.append(prim)
             prim_infos.append({"morph": morph_info, "out_vert_count": len(out_pos)})
 
         gltf_mesh = {"name": mesh_name, "primitives": primitives}
+
+        # Provide default morph weights on the mesh for Blender/glTF importer compatibility.
+
+        # Blender may not create Shape Keys unless mesh.weights exists and matches morph target count.
+
+        _mw = 0
+
+        for _p in primitives:
+
+            _tc = len(_p.get("targets", []) or [])
+
+            if _tc > _mw:
+
+                _mw = _tc
+
+        if _mw > 0:
+
+            gltf_mesh["weights"] = [0.0] * _mw
         self.g["meshes"].append(gltf_mesh)
         mesh_i = len(self.g["meshes"]) - 1
         return mesh_i, {"prim_infos": prim_infos}
@@ -1125,6 +1154,10 @@ def gltf_collect_mesh_data(gltf_path: str) -> Dict[str, Dict[str, Any]]:
         if "mesh" not in node:
             continue
         name = (node.get("name") or f"node{ni}").strip()
+        # RF round-trip metadata lives on the mesh node extras.
+        # We use this to reverse any geometry-space baking we applied when exporting to glTF.
+        rf_meta = (node.get("extras") or {}).get("rf_vfx") or {}
+        baked_geom_scale = rf_meta.get("baked_geom_scale")
         mesh = meshes[int(node["mesh"])]
         prim = (mesh.get("primitives") or [None])[0]
         if not prim:
@@ -1137,7 +1170,13 @@ def gltf_collect_mesh_data(gltf_path: str) -> Dict[str, Dict[str, Any]]:
         for tgt in prim.get("targets") or []:
             if "POSITION" in tgt:
                 targets.append(_gltf_accessor_read_vec3_f32(g, bin_data, int(tgt["POSITION"])))
-        out[name.lower()] = {"name": name, "positions": pos, "targets": targets}
+        rec: Dict[str, Any] = {"name": name, "positions": pos, "targets": targets}
+        if isinstance(baked_geom_scale, (list, tuple)) and len(baked_geom_scale) == 3:
+            try:
+                rec["baked_geom_scale"] = (float(baked_geom_scale[0]), float(baked_geom_scale[1]), float(baked_geom_scale[2]))
+            except Exception:
+                pass
+        out[name.lower()] = rec
     return out
 
 def patch_vfx_meshes_from_gltf(template_vfx: str, gltf_path: str, out_vfx: str,
@@ -1161,6 +1200,19 @@ def patch_vfx_meshes_from_gltf(template_vfx: str, gltf_path: str, out_vfx: str,
         if abs(gltf_scale) < 1e-20:
             raise ValueError("gltf_scale cannot be 0")
         pos_bl = [(p[0]/gltf_scale, p[1]/gltf_scale, p[2]/gltf_scale) for p in pos]
+
+        # If the glTF node indicates we baked a constant geometry scale (e.g. pivot_scale*scale
+        # on keyframed meshes like the CTF flagpole), reverse that bake here so we write
+        # template-space vertices back into the VFX. Otherwise the engine will apply the
+        # pivot/keyframe scale again and the mesh can become tiny/invisible in-game.
+        bgs = gd.get("baked_geom_scale")
+        if bgs is not None:
+            sx, sy, sz = bgs
+            if abs(sx) < 1e-20 or abs(sy) < 1e-20 or abs(sz) < 1e-20:
+                raise RuntimeError(f"Invalid baked_geom_scale for '{m.name}': {bgs}")
+            pos_bl = [(p[0]/sx, p[1]/sy, p[2]/sz) for p in pos_bl]
+            if debug:
+                print(f"[PATCH_UNBAKE] mesh='{m.name}' baked_geom_scale=({sx:.6f},{sy:.6f},{sz:.6f})")
         if len(pos_bl) != m.num_vertices:
             raise RuntimeError(f"Vertex count mismatch for '{m.name}': glTF={len(pos_bl)} vfx={m.num_vertices}. Topology changes are not supported.")
 
@@ -1180,9 +1232,16 @@ def patch_vfx_meshes_from_gltf(template_vfx: str, gltf_path: str, out_vfx: str,
                     deltas = targets[fi-1]
                     if len(deltas) != m.num_vertices:
                         raise RuntimeError(f"Target vertex mismatch for '{m.name}' target {fi-1}")
-                    frame_bl = [(pos_bl[i][0] + deltas[i][0]/gltf_scale,
-                                 pos_bl[i][1] + deltas[i][1]/gltf_scale,
-                                 pos_bl[i][2] + deltas[i][2]/gltf_scale) for i in range(m.num_vertices)]
+                    # Apply the same unbake to morph deltas if present.
+                    if bgs is not None:
+                        sx, sy, sz = bgs
+                        frame_bl = [(pos_bl[i][0] + (deltas[i][0]/gltf_scale)/sx,
+                                     pos_bl[i][1] + (deltas[i][1]/gltf_scale)/sy,
+                                     pos_bl[i][2] + (deltas[i][2]/gltf_scale)/sz) for i in range(m.num_vertices)]
+                    else:
+                        frame_bl = [(pos_bl[i][0] + deltas[i][0]/gltf_scale,
+                                     pos_bl[i][1] + deltas[i][1]/gltf_scale,
+                                     pos_bl[i][2] + deltas[i][2]/gltf_scale) for i in range(m.num_vertices)]
                 center_rf, mult_rf, pos_s16 = encode_positions_to_s16(frame_bl)
                 _write_vec3_f32(raw, fr.center_ofs, center_rf)
                 _write_vec3_f32(raw, fr.mult_ofs, mult_rf)
@@ -1317,12 +1376,14 @@ def export_gltf(
             baked_scale_from_pivot = (abs(psx), abs(psz), abs(psy))
 
         skip_scale_anim = False
+        baked_geom_scale: Optional[Tuple[float,float,float]] = None
         if (not m.morph) and m.is_keyframed and m.keyframes and baked_scale_from_pivot is not None:
             # if scale keys are constant, bake pivot_scale * scale into geometry and remove scale channel
             if m.keyframes.s_values:
                 s0 = m.keyframes.s_values[0]
                 if all(abs(s[0]-s0[0])<1e-6 and abs(s[1]-s0[1])<1e-6 and abs(s[2]-s0[2])<1e-6 for s in m.keyframes.s_values):
                     eff = (baked_scale_from_pivot[0]*s0[0], baked_scale_from_pivot[1]*s0[1], baked_scale_from_pivot[2]*s0[2])
+                    baked_geom_scale = eff
                     if debug_frames:
                         print(f"[DEBUG_SCALE] mesh='{m.name}' baked geom_scale=({eff[0]:.6f},{eff[1]:.6f},{eff[2]:.6f})")
                     base_bl = [(p[0]*eff[0], p[1]*eff[1], p[2]*eff[2]) for p in base_bl]
@@ -1341,6 +1402,7 @@ def export_gltf(
                 sx,sy,sz = geom_scale_vec
                 # convert scale axes to blender axis order (abs, swap)
                 bake_s = (abs(sx), abs(sz), abs(sy))
+                baked_geom_scale = bake_s
                 if debug_frames:
                     print(f"[DEBUG_SCALE] mesh='{m.name}' baked geom_scale=({bake_s[0]:.6f},{bake_s[1]:.6f},{bake_s[2]:.6f})")
                 # fold into base + morph positions in blender basis, before global 'scale'
@@ -1379,29 +1441,98 @@ def export_gltf(
             mesh_local_mat_to_global=m.materials_indices,
             morph_frames_bl=morph_frames_bl,
         )
-        node_i = gb.add_node(m.name, mesh_index=mesh_i)
+
+        # Mesh node (holds the actual mesh + metadata)
+        mesh_node_i = gb.add_node(m.name, mesh_index=mesh_i)
+
+        # Keyframed meshes have a "pivot_*" pre-transform that must be applied BEFORE keyframes.
+        # glTF composes parent*child, so we model:
+        #   world = KEY * PIVOT * local
+        # by making a KEY parent (animated) and a PIVOT child (static) that holds the mesh.
+        anim_node_i = mesh_node_i
+        key_node_i = None
+
+        def _pivot_is_nontrivial(mm: VfxMesh) -> bool:
+            if mm.pivot_translation_rf is None and mm.pivot_rotation_raw is None and mm.pivot_scale_rf is None:
+                return False
+            t = mm.pivot_translation_rf or (0.0,0.0,0.0)
+            r = mm.pivot_rotation_raw or (0.0,0.0,0.0,1.0)
+            s = mm.pivot_scale_rf or (1.0,1.0,1.0)
+            if (abs(t[0]) + abs(t[1]) + abs(t[2])) > 1e-9:
+                return True
+            if (abs(r[0]) + abs(r[1]) + abs(r[2]) + abs(r[3]-1.0)) > 1e-9:
+                return True
+            if (abs(s[0]-1.0) + abs(s[1]-1.0) + abs(s[2]-1.0)) > 1e-9:
+                return True
+            return False
+
+        if (not m.morph) and m.is_keyframed and m.keyframes and _pivot_is_nontrivial(m):
+            key_node_i = gb.add_node(m.name + "__KEY__", mesh_index=None)
+            anim_node_i = key_node_i
+            # KEY is parent of mesh node (which will carry PIVOT TRS)
+            gb.add_child(key_node_i, mesh_node_i)
+            # Parent the KEY node according to RF hierarchy
+            pending_parent.append((key_node_i, m.parent_name))
+        else:
+            pending_parent.append((mesh_node_i, m.parent_name))
+
+        # RF round-trip metadata (preserve keyframed pivot+keys and any geometry-scale baking we applied)
+        rf_meta: Dict[str, Any] = {"vfx_version": int(hdr.version)}
+        if m.is_keyframed and m.keyframed_block:
+            rf_meta["keyframed_block_b64"] = base64.b64encode(m.keyframed_block).decode("ascii")
+        if baked_geom_scale is not None:
+            rf_meta["baked_geom_scale"] = [float(baked_geom_scale[0]), float(baked_geom_scale[1]), float(baked_geom_scale[2])]
+        gb.g["nodes"][mesh_node_i].setdefault("extras", {})["rf_vfx"] = rf_meta
+
+        # Blender compatibility: also set default morph weights on the NODE when the mesh has morph targets.
+        _mw_list = gb.g.get("meshes", [{}])[mesh_i].get("weights")
+        if _mw_list:
+            gb.g["nodes"][mesh_node_i]["weights"] = list(_mw_list)
+
         # set initial TRS (time 0)
         if m.morph:
-            # morph meshes usually ride on parent
-            gb.set_node_trs(node_i, t=(0.0,0.0,0.0), r=(0.0,0.0,0.0,1.0), s=(1.0,1.0,1.0))
+            gb.set_node_trs(mesh_node_i, t=(0.0,0.0,0.0), r=(0.0,0.0,0.0,1.0), s=(1.0,1.0,1.0))
+
         elif m.is_keyframed and m.keyframes:
-            # set to first keyframe values if present
+            # Animate KEY (or the mesh node if no pivot wrapper)
             t0 = m.keyframes.t_values[0] if m.keyframes.t_values else (0.0,0.0,0.0)
             r0 = m.keyframes.r_values[0] if m.keyframes.r_values else (0.0,0.0,0.0,1.0)
             s0 = m.keyframes.s_values[0] if m.keyframes.s_values else (1.0,1.0,1.0)
-            if skip_scale_anim: s0 = (1.0,1.0,1.0)
-            gb.set_node_trs(node_i, t=(t0[0]*trs_scale, t0[1]*trs_scale, t0[2]*trs_scale), r=r0, s=s0)
+            if skip_scale_anim:
+                s0 = (1.0,1.0,1.0)
+            gb.set_node_trs(anim_node_i, t=(t0[0]*trs_scale, t0[1]*trs_scale, t0[2]*trs_scale), r=r0, s=s0)
+
+            # Apply PIVOT TRS on mesh node when wrapped
+            if key_node_i is not None:
+                pt_rf = m.pivot_translation_rf or (0.0,0.0,0.0)
+                pr_raw = m.pivot_rotation_raw or (0.0,0.0,0.0,1.0)
+                ps_rf = m.pivot_scale_rf or (1.0,1.0,1.0)
+
+                pt_bl = rf_to_blender(pt_rf)
+                pr_bl = quat_rf_to_blender(pr_raw)
+
+                # If we baked pivot_scale (and possibly constant scale keys) into geometry, keep pivot scale at identity.
+                if baked_geom_scale is not None and skip_scale_anim:
+                    ps_bl = (1.0,1.0,1.0)
+                else:
+                    ps_bl = (abs(ps_rf[0]), abs(ps_rf[2]), abs(ps_rf[1]))
+
+                gb.set_node_trs(mesh_node_i, t=(pt_bl[0]*trs_scale, pt_bl[1]*trs_scale, pt_bl[2]*trs_scale), r=pr_bl, s=ps_bl)
+
         elif trs_frames:
             t0,r0,s0 = trs_frames[0]
-            gb.set_node_trs(node_i, t=(t0[0]*trs_scale, t0[1]*trs_scale, t0[2]*trs_scale), r=r0, s=s0)
-        else:
-            gb.set_node_trs(node_i, t=(0.0,0.0,0.0), r=(0.0,0.0,0.0,1.0), s=(1.0,1.0,1.0))
+            gb.set_node_trs(mesh_node_i, t=(t0[0]*trs_scale, t0[1]*trs_scale, t0[2]*trs_scale), r=r0, s=s0)
 
-        node_by_name[m.name] = node_i
-        pending_parent.append((node_i, m.parent_name))
+        else:
+            gb.set_node_trs(mesh_node_i, t=(0.0,0.0,0.0), r=(0.0,0.0,0.0,1.0), s=(1.0,1.0,1.0))
+
+        # Parent-resolution map: RF child objects refer to the *mesh name* (e.g. FlagMesh parent='flagpole').
+        # For keyframed meshes with a pivot wrapper, children should attach to the KEY node (animation node),
+        # not to the pivot mesh node (which would incorrectly offset children).
+        node_by_name[m.name] = key_node_i if key_node_i is not None else mesh_node_i
         mesh_node_infos.append({
             "mesh": m,
-            "node_i": node_i,
+            "node_i": anim_node_i,
             "morph_targets_count": (len(morph_frames_bl)-1) if (morph_frames_bl is not None) else 0,
             "trs_frames": trs_frames,
             "skip_scale_anim": skip_scale_anim,
@@ -1795,14 +1926,65 @@ def _section(type_u32: int, body: bytes) -> bytes:
     # section header: type + len (len includes itself, not type)
     return struct.pack("<II", int(type_u32), int(len(body) + 4)) + body
 
+
+# ----------------------------
+# RF v4.6 keyframed pivot+key block helpers (for faithful round-trip)
+# ----------------------------
+
+def _rf46_keyframed_block_counts(block: bytes) -> Tuple[int,int,int]:
+    """Return (num_t, num_r, num_s) from a v4.6 keyframed block.
+
+    Layout we rely on (v4.6 keyframed mesh):
+      pivot_translation (3f) + pivot_rotation (4f) + pivot_scale (3f) = 40 bytes
+      num_t (i32) then num_t * 40 bytes
+      num_r (i32) then num_r * 40 bytes
+      num_s (i32) then num_s * 40 bytes
+    """
+    if not block or len(block) < 40 + 4:
+        return (0,0,0)
+    o = 40
+    try:
+        (nt,) = struct.unpack_from("<i", block, o); o += 4
+        if nt < 0: nt = 0
+        o += nt * 40
+        (nr,) = struct.unpack_from("<i", block, o); o += 4
+        if nr < 0: nr = 0
+        o += nr * 40
+        (ns,) = struct.unpack_from("<i", block, o); o += 4
+        if ns < 0: ns = 0
+        return (int(nt), int(nr), int(ns))
+    except Exception:
+        return (0,0,0)
+
+def _rf46_keyframed_block_is_sane(block: bytes) -> bool:
+    nt,nr,ns = _rf46_keyframed_block_counts(block)
+    if nt == 0 and nr == 0 and ns == 0:
+        return False
+    # quick length check (approx)
+    need = 40 + 4 + nt*40 + 4 + nr*40 + 4 + ns*40
+    return len(block) >= need
+
 def export_new_vfx_from_gltf(gltf_path: str,
                              out_vfx: str,
                              gltf_scale: float = 1.0,
                              anchor: Optional[str] = None,
+                             template_vfx: Optional[str] = None,
                              debug: bool = False) -> None:
     g = _gltf_load_json(gltf_path)
     bin_data = _gltf_load_bin(g, gltf_path)
     nodes = g.get("nodes") or []
+
+    # Optional template VFX: used to preserve RF-native material names (usually .tga/.vbm)
+    # and timing (end_frame) for exact/round-trip exports. glTF images are commonly PNG/JPG,
+    # which RF may not support for VFX materials.
+    template_hdr = None
+    template_materials: Optional[List[VfxMaterial]] = None
+    if template_vfx:
+        try:
+            template_hdr, template_materials, _t_meshes, _t_dummies = parse_vfx(template_vfx)
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse template VFX '{template_vfx}': {e}")
+
     parent_map = _gltf_parent_map(nodes)
     meshes_g = g.get("meshes") or []
 
@@ -1869,7 +2051,10 @@ def export_new_vfx_from_gltf(gltf_path: str,
 
 
     # --- materials (global) ---
-    mats: List[str] = []
+    # --- materials (global) ---
+    # Build a glTF material->texture0 (image uri) map.
+    # If a template VFX is provided, we will prefer its tex0 names when writing MATL sections.
+    gltf_tex0_by_mat: Dict[int, str] = {}
     images = g.get("images") or []
     textures = g.get("textures") or []
     for mi, mat in enumerate(g.get("materials") or []):
@@ -1885,7 +2070,8 @@ def export_new_vfx_from_gltf(gltf_path: str,
                     tex0 = images[int(si)].get("uri") or ""
         except Exception:
             tex0 = ""
-        mats.append(tex0)
+        gltf_tex0_by_mat[int(mi)] = tex0
+
 
     # --- gather objects ---
     mesh_objs: List[Dict[str,Any]] = []
@@ -1909,6 +2095,17 @@ def export_new_vfx_from_gltf(gltf_path: str,
         t = node.get("translation") or [0.0,0.0,0.0]
         r = node.get("rotation") or [0.0,0.0,0.0,1.0]
         s = node.get("scale") or [1.0,1.0,1.0]
+
+        # RF round-trip metadata (if present in glTF extras)
+        rf_ex = {}
+        try:
+            ex = node.get("extras")
+            if isinstance(ex, dict):
+                rf_ex = ex.get("rf_vfx") or {}
+                if not isinstance(rf_ex, dict):
+                    rf_ex = {}
+        except Exception:
+            rf_ex = {}
 
         if "mesh" in node:
             mesh_i = int(node["mesh"])
@@ -1979,6 +2176,7 @@ def export_new_vfx_from_gltf(gltf_path: str,
                 "indices": indices,
                 "targets": targets,
                 "material_index": mat_i,
+                "rf_vfx": rf_ex,
             })
         else:
             # Treat '$*' nodes as DMMY (markers/props)
@@ -1996,6 +2194,24 @@ def export_new_vfx_from_gltf(gltf_path: str,
                     "t": t_b,
                     "r": r_b,
                 })
+
+    # --- normalize & preserve materials ---
+    # Use only materials actually referenced by meshes, and remap them densely (0..N-1).
+    # If template VFX is provided, prefer its tex0 strings (RF-native names) over glTF image uris.
+    used_mat_ids = sorted({int(mo.get("material_index", 0)) for mo in mesh_objs}) if mesh_objs else [0]
+    mat_id_remap = {old: new for new, old in enumerate(used_mat_ids)}
+    mats: List[str] = []
+    for old in used_mat_ids:
+        tex0 = gltf_tex0_by_mat.get(int(old), "")
+        if template_materials is not None and 0 <= int(old) < len(template_materials):
+            ttex = (template_materials[int(old)].tex0 or "")
+            if ttex:
+                tex0 = ttex
+        mats.append(tex0)
+    # apply remap so meshes reference the dense material table we will emit
+    for mo in mesh_objs:
+        mo["material_index"] = int(mat_id_remap.get(int(mo.get("material_index", 0)), 0))
+
 
     # --- infer durations (global end_frame is in 15fps units) ---
     max_end_time = 0.0
@@ -2020,6 +2236,12 @@ def export_new_vfx_from_gltf(gltf_path: str,
     end_frame = int(round(max_end_time * 15.0))
     if end_frame < 0: end_frame = 0
 
+    # If a template VFX is provided, preserve its timing (exact round-trip behavior).
+    if template_hdr is not None:
+        end_frame = int(template_hdr.end_frame)
+        if end_frame < 0: end_frame = 0
+        max_end_time = float(end_frame) / 15.0
+
     if debug:
         print(f"[NEW_VFX] meshes={len(mesh_objs)} dummies={len(dummy_objs)} materials={len(mats)} end_time={max_end_time:.6f}s end_frame(15fps)={end_frame}")
 
@@ -2043,7 +2265,22 @@ def export_new_vfx_from_gltf(gltf_path: str,
     for mo in mesh_objs:
         name = mo["name"]
         parent_name = mo["parent_name"]
-        pos_bl = [(p[0]/gltf_scale, p[1]/gltf_scale, p[2]/gltf_scale) for p in mo["positions"]]
+        bake_s = None
+        try:
+            rf_ex = mo.get("rf_vfx") or {}
+            bake_s = rf_ex.get("baked_geom_scale") if isinstance(rf_ex, dict) else None
+        except Exception:
+            bake_s = None
+        if isinstance(bake_s, (list, tuple)) and len(bake_s) == 3:
+            bx,by,bz = (float(bake_s[0]), float(bake_s[1]), float(bake_s[2]))
+            if abs(bx) < 1e-12: bx = 1.0
+            if abs(by) < 1e-12: by = 1.0
+            if abs(bz) < 1e-12: bz = 1.0
+            pos_bl = [(p[0]/gltf_scale/bx, p[1]/gltf_scale/by, p[2]/gltf_scale/bz) for p in mo["positions"]]
+            targets_bl = [[(tp[0]/gltf_scale/bx, tp[1]/gltf_scale/by, tp[2]/gltf_scale/bz) for tp in tgt] for tgt in (mo.get("targets") or [])]
+        else:
+            pos_bl = [(p[0]/gltf_scale, p[1]/gltf_scale, p[2]/gltf_scale) for p in mo["positions"]]
+            targets_bl = (mo.get("targets") or [])
         uv_bl = None
         if mo["uv"] is not None:
             uv_bl = [(u[0], u[1]) for u in mo["uv"]]
@@ -2055,11 +2292,13 @@ def export_new_vfx_from_gltf(gltf_path: str,
         # materials per mesh (simple: one)
         total_mesh_material_indices += 1
 
-        # face_vertices table (one entry per face corner)
-        # IMPORTANT: RF expects adjacency lists to exist (used for normal calc). We provide 1 adjacent face per corner.
-        num_face_vertices = num_faces * 3
-        total_face_vertices += num_face_vertices
-        total_adjacent += num_face_vertices  # 1 adjacent face per face_vertex
+        # face_vertices table (v4.6): list of "vertex normals" entries.
+        # Faces reference this table via fvi0/fvi1/fvi2.
+        # To match RF expectations (and avoid in-game crashes), we build a COMPRESSED table:
+        #   key = (smoothing_group, vertex_index)
+        # and adjacency lists contain the faces that reference that face-vertex.
+        fv_map: Dict[Tuple[int,int], int] = {}
+        fv_entries: List[Dict[str, Any]] = []  # { "sg": int, "vi": int, "adj": List[int] }
 
         # flags
         is_morph = True if (mo["targets"] and len(mo["targets"]) > 0) else False
@@ -2086,6 +2325,18 @@ def export_new_vfx_from_gltf(gltf_path: str,
         # Build faces + uv-per-face-vertex order
         face_uvs: List[Tuple[float,float]] = []
         faces_blob = bytearray()
+        sg_default = 1
+
+        def _fv_get(vi: int, face_i: int) -> int:
+            key = (sg_default, int(vi))
+            idx = fv_map.get(key)
+            if idx is None:
+                idx = len(fv_entries)
+                fv_map[key] = idx
+                fv_entries.append({"sg": sg_default, "vi": int(vi), "adj": []})
+            fv_entries[idx]["adj"].append(int(face_i))
+            return int(idx)
+
         for fi in range(num_faces):
             i0 = int(indices[fi*3+0]); i1 = int(indices[fi*3+1]); i2 = int(indices[fi*3+2])
             # (ignored) indices
@@ -2106,12 +2357,20 @@ def export_new_vfx_from_gltf(gltf_path: str,
             faces_blob += _pack_vec3_rf(blender_to_rf(center_bl))
             faces_blob += struct.pack("<f", float(r))
             faces_blob += struct.pack("<i", 0)    # material_index (mesh-local)
-            faces_blob += struct.pack("<i", 0)    # smoothing_group
-            fvi0 = fi*3+0; fvi1=fi*3+1; fvi2=fi*3+2
-            faces_blob += struct.pack("<iii", fvi0, fvi1, fvi2)
+            faces_blob += struct.pack("<i", sg_default)    # smoothing_group
+            fvi0 = _fv_get(i0, fi); fvi1 = _fv_get(i1, fi); fvi2 = _fv_get(i2, fi)
+            faces_blob += struct.pack("<iii", int(fvi0), int(fvi1), int(fvi2))
 
             if uv_bl is not None:
                 face_uvs.extend([uv_bl[i0], uv_bl[i1], uv_bl[i2]])
+
+        # finalize face_vertices totals for header counts
+        num_face_vertices = len(fv_entries)
+        total_face_vertices += num_face_vertices
+        adj_sum = 0
+        for _fv in fv_entries:
+            adj_sum += len(_fv.get("adj") or [])
+        total_adjacent += int(adj_sum)
 
         # Bounding sphere
         bcenter_bl, brad = _bounds_center_radius(pos_bl)
@@ -2121,7 +2380,7 @@ def export_new_vfx_from_gltf(gltf_path: str,
         body = bytearray()
         body += _pack_strz(name)
         body += _pack_strz(parent_name)
-        body += struct.pack("<b", 1)  # save_parent
+        body += struct.pack("<b", 0)  # save_parent (match RF samples)
         body += struct.pack("<i", int(num_vertices))
         body += struct.pack("<i", int(num_faces))
         body += faces_blob
@@ -2137,25 +2396,44 @@ def export_new_vfx_from_gltf(gltf_path: str,
         body += struct.pack("<f", float(brad))
         body += struct.pack("<I", int(flags_raw))
 
+        num_face_vertices = len(fv_entries)
         body += struct.pack("<i", int(num_face_vertices))
-        # mesh_face_vertex table: one record per face corner (smoothing_group, vertex_index, u,v, n_adj, adj_faces[])
-        for fi in range(num_faces):
-            for c in range(3):
-                vi = int(indices[fi*3 + c])
-                body += struct.pack("<i", 1)         # smoothing_group (1 is common in RF exports)
-                body += struct.pack("<i", vi)        # vertex index
-                body += struct.pack("<f", 0.0)       # u garbage / legacy
-                body += struct.pack("<f", 0.0)       # v garbage / legacy
-                body += struct.pack("<i", 1)         # num_adjacent_faces
-                body += struct.pack("<i", fi)        # adjacent face index
+        # mesh_face_vertex table: (smoothing_group, vertex_index, u,v legacy, n_adj, adj_faces[])
+        for fv in fv_entries:
+            sg = int(fv.get("sg", 1))
+            vi = int(fv.get("vi", 0))
+            adj = fv.get("adj") or []
+            body += struct.pack("<i", sg)
+            body += struct.pack("<i", vi)
+            body += struct.pack("<f", 0.0)  # u legacy
+            body += struct.pack("<f", 0.0)  # v legacy
+            body += struct.pack("<i", int(len(adj)))
+            for afi in adj:
+                body += struct.pack("<i", int(afi))
+        rf_ex = mo.get("rf_vfx") or {}
+        rf_block_b64 = rf_ex.get("keyframed_block_b64") if isinstance(rf_ex, dict) else None
+        rf_block = None
+        if isinstance(rf_block_b64, str) and rf_block_b64:
+            try:
+                rf_block = base64.b64decode(rf_block_b64.encode("ascii"))
+            except Exception:
+                rf_block = None
 
         is_keyframed = (not is_morph) and (not bool(mo.get("parent_is_mesh", False)))
+        if rf_block is not None and _rf46_keyframed_block_is_sane(rf_block):
+            is_keyframed = True
 
         if is_keyframed:
             total_keyframe_lists += 1
-            total_translation_keys += 1
-            total_rotation_keys += 1
-            total_scale_keys += 1
+            if rf_block is not None and _rf46_keyframed_block_is_sane(rf_block):
+                nt, nr, ns = _rf46_keyframed_block_counts(rf_block)
+                total_translation_keys += nt
+                total_rotation_keys += nr
+                total_scale_keys += ns
+            else:
+                total_translation_keys += 1
+                total_rotation_keys += 1
+                total_scale_keys += 1
 
         body += struct.pack("<B", 1 if is_keyframed else 0)  # is_keyframed
 
@@ -2163,7 +2441,7 @@ def export_new_vfx_from_gltf(gltf_path: str,
         if is_morph:
             # determine frame absolute positions
             base = pos_bl
-            targets = mo["targets"]
+            targets = targets_bl
             # if weights anim exists, drive frame selection
             frame_positions: List[List[Tuple[float,float,float]]] = []
             if weights_info and weights_info.get("times") and weights_info.get("weights") is not None:
@@ -2236,33 +2514,36 @@ def export_new_vfx_from_gltf(gltf_path: str,
                     body += _pack_vec3_rf((float(s_bl[0]), float(s_bl[2]), float(s_bl[1])))
 
             if is_keyframed:
-                # Keyframed meshes store pivot + keyframe list (v4.6). Most RF exports use 1 key each.
-                body += _pack_vec3_rf((0.0, 0.0, 0.0))                  # pivot_translation (RF space)
-                body += _pack_quat_raw(quat_blender_to_rf((0.0,0.0,0.0,1.0)))  # pivot_rotation
-                body += _pack_vec3_rf((1.0, 1.0, 1.0))                  # pivot_scale
+                if rf_block is not None and _rf46_keyframed_block_is_sane(rf_block):
+                    body += rf_block
+                else:
+                    # Keyframed meshes store pivot + keyframe list (v4.6). Most RF exports use 1 key each.
+                    body += _pack_vec3_rf((0.0, 0.0, 0.0))                  # pivot_translation (RF space)
+                    body += _pack_quat_raw(quat_blender_to_rf((0.0,0.0,0.0,1.0)))  # pivot_rotation
+                    body += _pack_vec3_rf((1.0, 1.0, 1.0))                  # pivot_scale
 
-                # Translation keys
-                body += struct.pack("<i", 1)
-                t_rf = blender_to_rf((t_bl[0]/gltf_scale, t_bl[1]/gltf_scale, t_bl[2]/gltf_scale))
-                body += struct.pack("<i", 0)                 # time (frame*320)
-                body += _pack_vec3_rf(t_rf)                  # value
-                body += _pack_vec3_rf((0.0,0.0,0.0))         # in_tangent
-                body += _pack_vec3_rf((0.0,0.0,0.0))         # out_tangent
+                    # Translation keys
+                    body += struct.pack("<i", 1)
+                    t_rf = blender_to_rf((t_bl[0]/gltf_scale, t_bl[1]/gltf_scale, t_bl[2]/gltf_scale))
+                    body += struct.pack("<i", 0)                 # time (frame*320)
+                    body += _pack_vec3_rf(t_rf)                  # value
+                    body += _pack_vec3_rf((0.0,0.0,0.0))         # in_tangent
+                    body += _pack_vec3_rf((0.0,0.0,0.0))         # out_tangent
 
-                # Rotation keys
-                body += struct.pack("<i", 1)
-                q_rf = quat_blender_to_rf(r_bl)
-                body += struct.pack("<i", 0)                 # time (frame*320)
-                body += _pack_quat_raw(q_rf)                 # value
-                body += struct.pack("<fffff", 0.0,0.0,0.0,0.0,0.0)  # tension, continuity, bias, ease_in, ease_out
+                    # Rotation keys
+                    body += struct.pack("<i", 1)
+                    q_rf = quat_blender_to_rf(r_bl)
+                    body += struct.pack("<i", 0)                 # time (frame*320)
+                    body += _pack_quat_raw(q_rf)                 # value
+                    body += struct.pack("<fffff", 0.0,0.0,0.0,0.0,0.0)  # tension, continuity, bias, ease_in, ease_out
 
-                # Scale keys
-                body += struct.pack("<i", 1)
-                s_rf = (float(s_bl[0]), float(s_bl[2]), float(s_bl[1]))
-                body += struct.pack("<i", 0)                 # time (frame*320)
-                body += _pack_vec3_rf(s_rf)                  # value
-                body += _pack_vec3_rf((0.0,0.0,0.0))         # in_tangent
-                body += _pack_vec3_rf((0.0,0.0,0.0))         # out_tangent
+                    # Scale keys
+                    body += struct.pack("<i", 1)
+                    s_rf = (float(s_bl[0]), float(s_bl[2]), float(s_bl[1]))
+                    body += struct.pack("<i", 0)                 # time (frame*320)
+                    body += _pack_vec3_rf(s_rf)                  # value
+                    body += _pack_vec3_rf((0.0,0.0,0.0))         # in_tangent
+                    body += _pack_vec3_rf((0.0,0.0,0.0))         # out_tangent
         sec_bytes += _section(SEC_SFXO, bytes(body))
 
     # Dummy sections
@@ -2317,7 +2598,9 @@ def export_new_vfx_from_gltf(gltf_path: str,
         "num_selset_objects": 0,
     }
 
-    header = _write_vfx_header(0x00040006, 0, end_frame, counts)
+    out_version = int(template_hdr.version) if template_hdr is not None else 0x00040006
+    out_flags = int(template_hdr.flags) if (template_hdr is not None and template_hdr.flags is not None) else 0
+    header = _write_vfx_header(out_version, out_flags, end_frame, counts)
     os.makedirs(os.path.dirname(os.path.abspath(out_vfx)) or ".", exist_ok=True)
     with open(out_vfx, "wb") as f:
         f.write(header)
@@ -2362,6 +2645,7 @@ def main(argv: List[str]) -> int:
 
 
     anchor_name: Optional[str] = None
+    template_vfx: Optional[str] = None
     i = 0
     files: List[str] = []
     while i < len(args):
@@ -2402,6 +2686,8 @@ def main(argv: List[str]) -> int:
             new_from_gltf = args[i+1]; i += 2; continue
         if a == "--anchor":
             anchor_name = args[i+1]; i += 2; continue
+        if a == "--template-vfx":
+            template_vfx = args[i+1]; i += 2; continue
 
         if a == "--only-mesh":
             only_meshes = [s.strip() for s in args[i+1].split(",") if s.strip()]; i += 2; continue
@@ -2415,8 +2701,8 @@ def main(argv: List[str]) -> int:
             print("  Roundtrip:   vfx2obj.py --roundtrip-only [--verify-roundtrip] [--roundtrip-out PATH] file.vfx")
             print("  Patch VFX (offset): vfx2obj.py --vfx-out PATH --patch-vfx-only --mesh-offset Name=x,y,z file.vfx")
             print("  Patch VFX from glTF: vfx2obj.py --vfx-out PATH --patch-vfx-only --gltf-in edited.gltf [--gltf-scale N] [--only-mesh a,b] template.vfx")
-            print("  True export: vfx2obj.py --new-vfx-from-gltf scene.gltf --vfx-out PATH [--gltf-scale N] [--anchor NODE]")
-            print("  New VFX from glTF: vfx2obj.py --new-vfx-from-gltf scene.gltf --vfx-out PATH [--gltf-scale N]")
+            print("  True export: vfx2obj.py --new-vfx-from-gltf scene.gltf --vfx-out PATH [--gltf-scale N] [--anchor NODE] [--template-vfx template.vfx]")
+            print("  New VFX from glTF: vfx2obj.py --new-vfx-from-gltf scene.gltf --vfx-out PATH [--gltf-scale N] [--template-vfx template.vfx]")
             return 0
 
         files.append(a)
@@ -2428,7 +2714,7 @@ def main(argv: List[str]) -> int:
             base = os.path.splitext(os.path.basename(new_from_gltf))[0]
             out_dir = os.path.dirname(os.path.abspath(new_from_gltf)) or "."
             vfx_out = os.path.join(out_dir, base + ".vfx")
-        export_new_vfx_from_gltf(new_from_gltf, vfx_out, gltf_scale=gltf_scale, anchor=anchor_name, debug=debug_frames)
+        export_new_vfx_from_gltf(new_from_gltf, vfx_out, gltf_scale=gltf_scale, anchor=anchor_name, template_vfx=template_vfx, debug=debug_frames)
         return 0
 
     if not files:

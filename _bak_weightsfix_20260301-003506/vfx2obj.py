@@ -2061,7 +2061,53 @@ def export_new_vfx_from_gltf(
             if debug:
                 print(f"[ANCHOR] node='{anchor}' not found; no shift applied")
 
-    # --- materials (global) ---
+    
+    def _rf_fix_tex_uri(uri: str, gltf_path: str, debug: bool=False) -> str:
+        """Fix Blender/glTF image-uri naming back to RF-friendly .tga/.dds filenames."""
+        u = (uri or "").strip()
+        if not u:
+            return ""
+        u = u.split("#", 1)[0].split("?", 1)[0]
+        u = u.replace("\\", "/").split("/")[-1]
+        low = u.lower()
+
+        def _dbg(out: str, note: str=""):
+            if debug and out != u:
+                print(f"[TEX] '{uri}' -> '{out}'{(' ' + note) if note else ''}")
+
+        if low.endswith("_tga.png"):
+            out = u[:-8] + ".tga"
+            _dbg(out, "(strip _tga.png)")
+            return out
+        if low.endswith("_dds.png"):
+            out = u[:-8] + ".dds"
+            _dbg(out, "(strip _dds.png)")
+            return out
+        if low.endswith(".tga.png") or low.endswith(".dds.png"):
+            out = u[:-4]  # drop trailing .png
+            _dbg(out, "(drop .png)")
+            return out
+
+        if low.endswith(".png"):
+            base = u[:-4]
+            d = os.path.dirname(gltf_path)
+            cand_tga = os.path.join(d, base + ".tga")
+            cand_dds = os.path.join(d, base + ".dds")
+            if os.path.exists(cand_tga):
+                out = base + ".tga"
+                _dbg(out, "(found .tga next to glTF)")
+                return out
+            if os.path.exists(cand_dds):
+                out = base + ".dds"
+                _dbg(out, "(found .dds next to glTF)")
+                return out
+            out = base + ".tga"
+            _dbg(out, "(png fallback -> .tga)")
+            return out
+
+        return u
+
+# --- materials (global) ---
     mats: List[str] = []
     images = g.get("images") or []
     textures = g.get("textures") or []
@@ -2078,7 +2124,7 @@ def export_new_vfx_from_gltf(
                     tex0 = images[int(si)].get("uri") or ""
         except Exception:
             tex0 = ""
-        mats.append(tex0)
+        mats.append(_rf_fix_tex_uri(tex0, gltf_path, debug))
 
     def _node_name(ni: int) -> str:
         return ((nodes[ni] or {}).get("name") or f"node{ni}").strip()
